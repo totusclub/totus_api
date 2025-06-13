@@ -1,0 +1,11 @@
+# Node modules
+node_modules/
+
+# macOS system file
+.DS_Store
+
+# npm lock file
+package-lock.json
+
+# JetBrains IDE settings
+.idea/
