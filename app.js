@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const authRoutes = require('./routes/auth.routes');
 
 const app = express();
 app.use(cors());
@@ -317,7 +318,7 @@ app.post('/packages/flights', async (req, res) => {
     }
 });
 
-
+app.use('/api/auth', authRoutes);
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);
