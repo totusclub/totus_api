@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const authRoutes = require('./routes/auth.routes');
+const db = require("./db");
+const {json, response} = require("express");
 
 const app = express();
 app.use(cors());
@@ -31,6 +33,8 @@ app.get('/references/departures', async (req, res) => {
         res.status(500).json({ error: 'Failed departures' });
     }
 });
+
+
 
 app.get('/references/destinations', async (req, res) => {
     try {
@@ -307,7 +311,6 @@ app.get('/get-hotel-offers', async (req, res) => {
 
 app.post('/packages/flights', async (req, res) => {
     try {
-        console.log('aaaaaa', req.body);
         const response = await axios.post(`${BASE_URL}/packages/flights`, req.body, {
             headers: HEADERS_3_8,
         });
@@ -315,6 +318,226 @@ app.post('/packages/flights', async (req, res) => {
     } catch (error) {
         console.error('Error flights  :', error.message);
         res.status(500).json({ error: 'Failed to start search' });
+    }
+});
+
+
+app.post('/vtb/create-order', async (req, res) => {
+    try {
+        const {
+            orderId,
+            orderName,
+            expire,
+            amount,
+            returnUrl
+        } = req.body;
+        const data = await generationBankToken()
+
+        if (!orderId || !orderName || !expire || !amount?.value || !amount?.code || !returnUrl) {
+            return res.status(400).json({ error: "Missing required fields" });
+        }
+
+        const headers = {
+            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
+            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
+            "Authorization": `Bearer ${data.access_token}`, // Replace with real token
+            "Content-Type": "application/json"
+        };
+
+        const payload = {
+            orderId,
+            orderName,
+            expire,
+            amount,
+            returnUrl
+        };
+
+        const response = await axios.post(
+            "https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders",
+            payload,
+            { headers }
+        );
+
+        res.json(response.data);
+    } catch (error) {
+        console.error("VTB Order Creation Error:", error.response?.data || error.message);
+        res.status(500).json({ error: "Failed to create VTB order" });
+    }
+});
+
+
+app.post('/check_pay', async (req, res) => {
+    try {
+        const { orderId } = req.body;
+
+        if (!orderId) {
+            return res.status(400).json({ error: "Missing required 'orderId'" });
+        }
+
+        // Generate access token from VTB
+        const data = await generationBankToken();
+
+        const headers = {
+            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
+            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
+            "Authorization": `Bearer ${data.access_token}`,
+            "Content-Type": "application/json"
+        };
+
+        const response = await axios.get(
+            `https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders/${orderId}`,
+            { headers }
+        );
+
+        const payment = response?.data?.object;
+
+        if (payment) {
+            const pay_status = payment.status.value;
+            const transaction_id = payment.orderId;
+            const transaction_code = payment.orderCode;
+            const clean_order_id = transaction_id.replace("ORDER", "");
+
+            // Optional: validate DB order exists before updating
+            try{
+                await db.query(
+                    'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
+                    [pay_status, transaction_id, transaction_code, clean_order_id]
+                );
+            }catch (e){
+                console.log('safsa',e);
+            }
+
+
+            return res.json({ message: 'Order status updated', status: pay_status });
+        } else {
+            return res.status(404).json({ error: "No payment info found for this order" });
+        }
+    } catch (error) {
+        console.error("VTB Order Status Error:", error.response?.data || error.message);
+        return res.status(500).json({ error: "Failed to check payment status" });
+    }
+});
+
+
+const generationBankToken = async ()=>{
+    try {
+        const params = new URLSearchParams();
+        params.append("grant_type", "client_credentials");
+        params.append("client_id", "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru");
+        params.append("client_secret", "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx");
+
+        const response = await axios.post(
+            "https://auth.bankingapi.ru/auth/realms/kubernetes/protocol/openid-connect/token",
+            params,
+            {
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+            }
+        );
+        return response.data
+    } catch (error) {
+        return error
+    }
+}
+
+
+app.post('/create-package', async (req, res) => {
+    try {
+        const payload = req.body;
+
+        const headers = {
+            "accept": "application/vnd.leveltravel.v3.7",
+            "authorization": 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
+            "Content-Type": "application/json",
+            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d447"
+        };
+
+        let params = {
+            client: {
+                id: "3003047",
+                name: "Туртест",
+                surname: "Арлекино",
+                email: "arlekinotour_test@level.travel",
+                phone: "7972988888"
+            },
+            package_id:payload?.package_id,
+            tourists:payload?.tourists,
+            flight_pair_id:payload.flight_pair_id,
+            payment_option: "card",
+            selected_extras:[],
+            source:'desktop',
+            comment: "yafob30749@lhory.com;7920998299;Дмитрий;Васильков"
+        }
+
+        console.log('params',params)
+
+        const response = await axios.post(`${BASE_URL}/orders/create`, params,
+            { headers }
+        );
+        if(response.data.success){
+            let order_id = response.data.order.id;
+            let package = JSON.stringify(response.data.order);
+            let user_id = payload.user_id;
+            await db.query(
+                'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
+                [order_id, package, user_id]
+            );
+        }
+
+        res.json(response.data);
+    } catch (error) {
+        res.json({error:error.response?.data || error.message});
+
+    }
+});
+
+app.post('/validate-tourists', async (req, res) => {
+    try {
+        const response = await axios.post(`${BASE_URL}/tourists/validate`, req.body, {
+            headers: HEADERS,
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        console.error("Error validating tourists:", error);
+        res.json({valid: false, errors: null});
+    }
+});
+
+app.get('/orders', async (req, res) => {
+    try {
+        const [orders] = await db.query('SELECT * FROM orders WHERE order_id = ?', [req.query.order_id]);
+        let order =JSON.parse(orders[0]['package']);
+
+        res.json({...orders[0],package:order});
+    } catch (error) {
+        console.error('Error departures:', error.message);
+        res.status(500).json({ error: 'Failed departures' });
+    }
+});
+app.get('/user/orders', async (req, res) => {
+    try {
+        const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [req.query.user_id]);
+        const parsedOrders = orders.map(order => {
+            let parsedPackage;
+
+            try {
+                parsedPackage = JSON.parse(order.package);
+            } catch (e) {
+                parsedPackage = {}; // or null / order.package if invalid JSON
+            }
+
+            return {
+                ...order,
+                package: parsedPackage
+            };
+        });
+
+        res.json(parsedOrders);
+    } catch (error) {
+        console.error('Error departures:', error.message);
+        res.status(500).json({ error: 'Failed departures' });
     }
 });
 
