@@ -17,7 +17,8 @@ const transporter = nodemailer.createTransport({
 });
 exports.signup = async (req, res) => {
     const { name, l_name, email, phone } = req.body;
-    const code = generateCode();
+    // const code = generateCode();
+    const code = 1111;
 
     try {
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
@@ -57,7 +58,8 @@ exports.verifyCode = async (req, res) => {
 
 exports.signin = async (req, res) => {
     const { email } = req.body;
-    const code = generateCode();
+    // const code = generateCode();
+    const code = 1111;
     try {
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         const user = users[0];
@@ -80,12 +82,12 @@ const TELEGRAM_GATEWAY_URL = 'https://gatewayapi.telegram.org/';
 const TELEGRAM_GATEWAY_TOKEN = 'AAGBIQAAULKEuFRsUuz4HRKyFDIPW20wYKw2A8YwISEVGA'; // replace this
 exports.verificationCode = async (req, res) => {
     const { phone } = req.body;
-    const code = generateCode();
+    // const code = generateCode();
+    const code = 1111;
     try {
         const checkResult = await gatewayPost('checkSendAbility', {
             phone_number: phone,
         });
-        console.log('checkResult',checkResult)
         if (!checkResult || !checkResult?.result?.request_id) {
             console.log('User not eligible or failed to check send ability.');
             res.status(200).json(checkResult);
