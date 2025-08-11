@@ -2,12 +2,21 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const authRoutes = require('./routes/auth.routes');
+const adminAuthRoutes = require('./routes/authRoutes');
+const faqRoutes = require('./routes/faq.routes');
+const popularRoutes = require('./routes/popular.routes');
+const contentRoutes = require('./routes/content.routes');
+const pagesRoutes = require('./routes/pages.routes');
 const db = require("./db");
+const path = require('path');
 const {json, response} = require("express");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')));
 
 const BASE_URL = 'https://api.level.travel';
 const HEADERS = {
@@ -46,6 +55,22 @@ app.get('/references/destinations', async (req, res) => {
     } catch (error) {
         console.error('Error destinations:', error.message);
         res.status(500).json({ error: 'Failed destinations' });
+    }
+});
+app.get('/references/autocomplete_v2', async (req, res) => {
+    try {
+        console.log('dcd',req.query)
+
+            const response = await axios.get(`${BASE_URL}/references/autocomplete_v2`, {
+                params: req.query,
+                headers: HEADERS,
+            });
+            res.json(response.data);
+
+
+    } catch (error) {
+        // console.error('Error destinations:', error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -542,7 +567,12 @@ app.get('/user/orders', async (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
-const PORT = process.env.PORT || 3001;
+app.use('/api/admin/auth', adminAuthRoutes);
+app.use('/api/admin', faqRoutes);
+app.use('/api/admin', popularRoutes);
+app.use('/api/content', contentRoutes);
+app.use('/api/admin/pages', pagesRoutes);
+const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);
 });

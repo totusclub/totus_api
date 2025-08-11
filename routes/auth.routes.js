@@ -6,4 +6,8 @@ router.post('/signup', authController.signup);
 router.post('/verify', authController.verifyCode);
 router.post('/signin', authController.signin);
 
+router.post('/verification-code', authController.verificationCode);
+router.post('/telegram-verification-callback', authController.telegramVerificationCallback);
+
+
 module.exports = router;

@@ -2,6 +2,7 @@ const db = require('../db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const {post} = require("axios");
 
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
@@ -74,3 +75,65 @@ exports.signin = async (req, res) => {
         res.status(500).json({ message: 'Signin failed', error: err.message });
     }
 };
+
+const TELEGRAM_GATEWAY_URL = 'https://gatewayapi.telegram.org/';
+const TELEGRAM_GATEWAY_TOKEN = 'AAGBIQAAULKEuFRsUuz4HRKyFDIPW20wYKw2A8YwISEVGA'; // replace this
+exports.verificationCode = async (req, res) => {
+    const { phone } = req.body;
+    const code = generateCode();
+    try {
+        const checkResult = await gatewayPost('checkSendAbility', {
+            phone_number: phone,
+        });
+        console.log('checkResult',checkResult)
+        if (!checkResult || !checkResult?.result?.request_id) {
+            console.log('User not eligible or failed to check send ability.');
+            res.status(200).json(checkResult);
+            return;
+        }
+        const sendResult = await gatewayPost('sendVerificationMessage', {
+            phone_number: phone,
+            request_id: checkResult?.result.request_id,
+            code_length: 4,
+            code:code,
+            ttl: 60, // 60 seconds
+            payload: 'verify_user_001',
+            // callback_url: 'http://localhost:3001/api/auth/telegram-verification-callback'
+        });
+
+        res.status(200).json(sendResult);
+
+    } catch (err) {
+        res.status(500).json({ message: 'Signin failed', error: err.message });
+    }
+};
+
+exports.telegramVerificationCallback = async (req, res) => {
+    try {
+        console.log('req',req?.body)
+        console.log('req.params',req.params)
+    } catch (err) {
+        res.status(500).json({ message: 'Signin failed', error: err.message });
+    }
+};
+
+
+
+async function gatewayPost(endpoint, data) {
+    try {
+        const response = await post(
+            `${TELEGRAM_GATEWAY_URL}${endpoint}`,
+            data,
+            {
+                headers: {
+                    Authorization: `Bearer ${TELEGRAM_GATEWAY_TOKEN}`,
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+        return response.data;
+    } catch (error) {
+        console.error('Telegram Gateway API Error:', error.response?.data || error.message);
+        return null;
+    }
+}
