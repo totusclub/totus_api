@@ -237,7 +237,9 @@ app.get('/grouped-hotels', async (req, res) => {
             filter_hotel_type,
             filter_meals,
             filter_operators,
-            filter_line
+            filter_line,
+            page_limit,
+            page_number,
         } = req.query;
 
         if (!request_id) {
@@ -257,6 +259,8 @@ app.get('/grouped-hotels', async (req, res) => {
             ...(filter_meals && { filter_meals }),
             ...(filter_operators && { filter_operators }),
             ...(filter_line && { filter_line }),
+            ...(page_limit && { page_limit }),
+            ...(page_number && { page_number }),
         };
 
         console.log('params',params)
