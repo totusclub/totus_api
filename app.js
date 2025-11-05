@@ -240,6 +240,7 @@ app.get('/grouped-hotels', async (req, res) => {
             filter_line,
             page_limit,
             page_number,
+            sort_by
         } = req.query;
 
         if (!request_id) {
@@ -261,6 +262,7 @@ app.get('/grouped-hotels', async (req, res) => {
             ...(filter_line && { filter_line }),
             ...(page_limit && { page_limit }),
             ...(page_number && { page_number }),
+            ...(sort_by && { sort_by }),
         };
 
         console.log('params',params)
