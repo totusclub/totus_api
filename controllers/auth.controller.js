@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const {post} = require("axios");
+const {generateUniqueLoyaltyId} = require("../utils/loyaltyGenerator");
 
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
@@ -15,17 +16,24 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASS, // app password
     },
 });
+
+function generateUserCode() {
+    return Array.from({ length: 4 }, () =>
+        Math.floor(1000 + Math.random() * 9000)
+    ).join(' ');
+}
 exports.signup = async (req, res) => {
     const { name, l_name, email, phone } = req.body;
     // const code = generateCode();
     const code = 1111;
 
     try {
+        const codeLoyalty = generateUniqueLoyaltyId();
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         if (user.length) return res.status(400).json({ message: 'Email already exists' });
         await db.query(
-            'INSERT INTO users (name, l_name, email, phone, code) VALUES (?, ?, ?, ?, ?)',
-            [name, l_name, email, phone, code]
+            'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
+            [name, l_name, email, phone, code, codeLoyalty]
         );
         await transporter.sendMail({
             from: process.env.EMAIL_USER,
@@ -39,6 +47,8 @@ exports.signup = async (req, res) => {
         res.status(500).json({ message: 'Signup failed', error: err.message });
     }
 };
+
+
 
 exports.verifyCode = async (req, res) => {
     const { email, code } = req.body;
@@ -73,6 +83,15 @@ exports.signin = async (req, res) => {
             text: `Your code is ${code}`,
         });
         res.status(201).json({ message: 'Verification code sent to email.',screen:'VERIFICATION' });
+    } catch (err) {
+        res.status(500).json({ message: 'Signin failed', error: err.message });
+    }
+};
+
+exports.generationLoyalty = async (req, res) => {
+    try {
+        const code = generateUniqueLoyaltyId();
+        res.status(200).json({ message: 'Verification code sent to email.',code:code });
     } catch (err) {
         res.status(500).json({ message: 'Signin failed', error: err.message });
     }
