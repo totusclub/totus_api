@@ -17,6 +17,7 @@ app.use(express.json());
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')));
+app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));
 
 const BASE_URL = 'https://api.level.travel';
 const HEADERS = {
@@ -524,16 +525,17 @@ app.post('/create-package', async (req, res) => {
 });
 
 app.post('/validate-tourists', async (req, res) => {
-    try {
+    // try {
         const response = await axios.post(`${BASE_URL}/tourists/validate`, req.body, {
             headers: HEADERS,
         });
-
+        console.log('response.data',response)
         res.json(response.data);
-    } catch (error) {
-        console.error("Error validating tourists:", error);
-        res.json({valid: false, errors: null});
-    }
+    // } catch (error) {
+    //     // console.error("Error validating tourists:", error);
+    //     console.log('response.data',error)
+    //     res.json({valid: false, errors: null});
+    // }
 });
 
 app.get('/orders', async (req, res) => {
@@ -569,6 +571,83 @@ app.get('/user/orders', async (req, res) => {
     } catch (error) {
         console.error('Error departures:', error.message);
         res.status(500).json({ error: 'Failed departures' });
+    }
+});
+
+
+app.get('/home/data', async (req, res) => {
+    try {
+        const data = {
+            recomendHotels:[
+                {
+                    id:9149847,
+                    name:'Swissotel Sharm El Sheikh Managed By Rixos',
+                    rate:5,
+                    city:'Наама Бэй, Шарм-эль-Шейх',
+                    image:'https://img.cdn.level.travel/hotels/9149847/def8891aa911a636e350e8438d9437ba_webp_x620.webp',
+                },
+                {
+                    id:9085039,
+                    name:'Cosmos Collection Altay Resort',
+                    rate:5,
+                    city:'Урлу-Аспак, Майминский район',
+                    image:'https://img.cdn.level.travel/hotels/9085039/f58b3c014000931c90910baa6298598d_webp_x620.webp',
+
+                },
+                {
+                    id:9022465,
+                    name:'Rixos Premium Seagate',
+                    rate:5,
+                    city:'Шарм-эль-Шейх',
+                    image:'https://img.cdn.level.travel/hotels/9022465/2bc6112958c15dd0d888b039bf10c3ee_webp_x620.webp',
+                },
+
+            ],
+            popularDestinations:[
+                {
+                    id: 1,
+                    name: 'Египет',
+                    image: 'https://api.totus.club/upload/home/egypt.png',
+                    to_country:'EG'
+                },
+                {
+                    id: 2,
+                    name: 'Турция',
+                    image: 'https://api.totus.club/upload/home/turky.png',
+                    to_country:'TR',
+                },
+                {
+                    id: 2,
+                    name: 'Россия',
+                    image: 'https://api.totus.club/upload/home/russon.png',
+                    to_country:'RU',
+                },
+                {
+                    id: 2,
+                    name: 'Мальдивы',
+                    image: 'https://api.totus.club/upload/home/maldiv.png',
+                    to_country:'MV',
+                },
+                {
+                    id: 2,
+                    name: 'ОАЭ',
+                    image: 'https://api.totus.club/upload/home/ae.png',
+                    to_country:'AE',
+                },
+                {
+                    id: 2,
+                    name: 'Индонезия',
+                    image: 'https://api.totus.club/upload/home/indonezia.png',
+                    to_country:'ID',
+                },
+            ]
+        }
+        res.json(data);
+    } catch (error) {
+
+        // console.log({...error.message})
+        console.error('Error starting  :', error.message);
+        res.status(500).json({ error: 'Failed to start search' });
     }
 });
 
