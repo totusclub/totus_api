@@ -631,7 +631,7 @@ app.get('/home/data', async (req, res) => {
                 {
                     id: 2,
                     name: 'ОАЭ',
-                    image: 'https://api.totus.club/upload/home/ae.png',
+                    image: 'https://api.totus.club/upload/home/oae.png',
                     to_country:'AE',
                 },
                 {
