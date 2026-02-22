@@ -8,6 +8,7 @@ const popularRoutes = require('./routes/popular.routes');
 const contentRoutes = require('./routes/content.routes');
 const pagesRoutes = require('./routes/pages.routes');
 const db = require("./db");
+const crypto = require('crypto');
 const path = require('path');
 const {json, response} = require("express");
 
@@ -44,8 +45,6 @@ app.get('/references/departures', async (req, res) => {
     }
 });
 
-
-
 app.get('/references/destinations', async (req, res) => {
     try {
         const response = await axios.get(`${BASE_URL}/references/destinations`, {
@@ -58,6 +57,7 @@ app.get('/references/destinations', async (req, res) => {
         res.status(500).json({ error: 'Failed destinations' });
     }
 });
+
 app.get('/references/autocomplete_v2', async (req, res) => {
     try {
         console.log('dcd',req.query)
@@ -241,7 +241,8 @@ app.get('/grouped-hotels', async (req, res) => {
             filter_line,
             page_limit,
             page_number,
-            sort_by
+            sort_by,
+            filter_beach_surface
         } = req.query;
 
         if (!request_id) {
@@ -264,6 +265,7 @@ app.get('/grouped-hotels', async (req, res) => {
             ...(page_limit && { page_limit }),
             ...(page_number && { page_number }),
             ...(sort_by && { sort_by }),
+            ...(filter_beach_surface && { filter_beach_surface }),
         };
 
         console.log('params',params)
@@ -398,58 +400,6 @@ app.post('/vtb/create-order', async (req, res) => {
 });
 
 
-app.post('/check_pay', async (req, res) => {
-    try {
-        const { orderId } = req.body;
-
-        if (!orderId) {
-            return res.status(400).json({ error: "Missing required 'orderId'" });
-        }
-
-        // Generate access token from VTB
-        const data = await generationBankToken();
-
-        const headers = {
-            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
-            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
-            "Authorization": `Bearer ${data.access_token}`,
-            "Content-Type": "application/json"
-        };
-
-        const response = await axios.get(
-            `https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders/${orderId}`,
-            { headers }
-        );
-
-        const payment = response?.data?.object;
-
-        if (payment) {
-            const pay_status = payment.status.value;
-            const transaction_id = payment.orderId;
-            const transaction_code = payment.orderCode;
-            const clean_order_id = transaction_id.replace("ORDER", "");
-
-            // Optional: validate DB order exists before updating
-            try{
-                await db.query(
-                    'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
-                    [pay_status, transaction_id, transaction_code, clean_order_id]
-                );
-            }catch (e){
-                console.log('safsa',e);
-            }
-
-
-            return res.json({ message: 'Order status updated', status: pay_status });
-        } else {
-            return res.status(404).json({ error: "No payment info found for this order" });
-        }
-    } catch (error) {
-        console.error("VTB Order Status Error:", error.response?.data || error.message);
-        return res.status(500).json({ error: "Failed to check payment status" });
-    }
-});
-
 
 const generationBankToken = async ()=>{
     try {
@@ -472,7 +422,6 @@ const generationBankToken = async ()=>{
         return error
     }
 }
-
 
 app.post('/create-package', async (req, res) => {
     try {
@@ -525,18 +474,30 @@ app.post('/create-package', async (req, res) => {
 });
 
 app.post('/validate-tourists', async (req, res) => {
-    // try {
-        const response = await axios.post(`${BASE_URL}/tourists/validate`, req.body, {
-            headers: HEADERS,
+    try {
+        const response = await axios.post(
+            `${BASE_URL}/tourists/validate`,
+            req.body,
+            { headers: HEADERS }
+        );
+
+        console.log('response.data:', response.data);
+
+        return res.json(response.data);
+
+    } catch (error) {
+        console.error(
+            'Validate tourists error:',
+            error.response?.data || error.message
+        );
+
+        return res.status(error.response?.status || 500).json({
+            success: false,
+            error: error.response?.data || 'Validation failed'
         });
-        console.log('response.data',response)
-        res.json(response.data);
-    // } catch (error) {
-    //     // console.error("Error validating tourists:", error);
-    //     console.log('response.data',error)
-    //     res.json({valid: false, errors: null});
-    // }
+    }
 });
+
 
 app.get('/orders', async (req, res) => {
     try {
@@ -650,6 +611,199 @@ app.get('/home/data', async (req, res) => {
         res.status(500).json({ error: 'Failed to start search' });
     }
 });
+
+app.post('/check_pay', async (req, res) => {
+    try {
+        const { orderId } = req.body;
+
+        if (!orderId) {
+            return res.status(200).json({
+                status: 'error',
+                message: "Missing required 'orderId'",
+                notify_status: null,
+                notify_result: null,
+                notify_data: null,
+                notify_error: null
+            });
+        }
+
+        // 1. Generate VTB token
+        const tokenData = await generationBankToken();
+
+        const headers = {
+            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
+            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
+            "Authorization": `Bearer ${tokenData.access_token}`,
+            "Content-Type": "application/json"
+        };
+
+        // 2. Get order from VTB
+        const vtbResponse = await axios.get(
+            `https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders/${orderId}`,
+            { headers }
+        );
+
+        const payment = vtbResponse?.data?.object;
+
+        if (!payment) {
+            return res.status(200).json({
+                status: 'not_found',
+                message: 'No payment info found',
+                notify_status: null,
+                notify_result: null,
+                notify_data: null,
+                notify_error: null
+            });
+        }
+
+        // 3. Parse payment info
+        const pay_status = payment.status.value;
+        const transaction_id = payment.orderId;
+        const transaction_code = payment.orderCode;
+        const clean_order_id = transaction_id.replace('ORDER', '');
+
+        const amount = payment?.amount?.value;
+        const status = pay_status.toLowerCase();
+
+        // 4. Notify result placeholders
+        let notify_status = null;
+        let notify_result = null;
+        let notify_data = null;
+        let notify_error = null;
+
+        // 5. Notify external service if PAID
+        if (status === 'paid') {
+            try {
+                const signature = generateSignature(
+                    clean_order_id,
+                    status,
+                    amount,
+                    "6a6ca82f341fea2a9d19b0d581c448e7"
+                );
+
+                const notifyPayload = {
+                    order_id: clean_order_id,
+                    status,
+                    amount,
+                    signature
+                };
+
+                const notifyResponse = await axios.post(
+                    `${BASE_URL}/orders/${clean_order_id}/notify`,
+                    notifyPayload,
+                    { headers: HEADERS }
+                );
+
+                notify_status = notifyResponse.status;
+                notify_result = 'ok';
+                notify_data = notifyResponse.data;
+
+            } catch (notifyErr) {
+                notify_status = notifyErr.response?.status || 500;
+                notify_result = 'error';
+                notify_error = notifyErr.response?.data || notifyErr.message;
+            }
+        }
+
+        // 6. Update DB (non-blocking)
+        try {
+            await db.query(
+                'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
+                [pay_status, transaction_id, transaction_code, clean_order_id]
+            );
+        } catch (dbErr) {
+            console.error('DB update failed:', dbErr);
+        }
+
+        // 7. Final response (always 200)
+        return res.status(200).json({
+            message: 'Order status checked',
+            status: pay_status,
+            transaction_id,
+            transaction_code,
+            notify_status,
+            notify_result,
+            notify_data,
+            notify_error
+        });
+
+    } catch (err) {
+        console.error('VTB check_pay error:', err.response?.data || err.message);
+
+        return res.status(200).json({
+            status: 'error',
+            message: 'Failed to check payment status',
+            notify_status: null,
+            notify_result: null,
+            notify_data: null,
+            notify_error: err.message
+        });
+    }
+});
+
+
+
+
+app.post('/payment/status', async (req, res) => {
+    try {
+        const payload = req.body;
+
+        const signature = generateSignature(
+            payload.order_id,
+            payload.status,
+            payload.amount,
+            "6a6ca82f341fea2a9d19b0d581c448e7"
+        );
+
+
+        const signatureCancelled = generateSignatureCancelled(
+            payload.order_id,
+            payload.status,
+            payload.amount,
+            "6a6ca82f341fea2a9d19b0d581c448e7"
+        );
+
+        const object = {
+            order_id: payload.order_id,
+            // status: payload.status,
+            signature: signatureCancelled,
+            amount: payload.amount,
+        };
+
+        const response = await axios.post(
+            `${BASE_URL}/orders/${payload.order_id}/notify`,
+            object,
+            { headers: HEADERS }
+        );
+
+        // Return same response (status + data)
+        return res.status(response.status).json(response.data);
+
+    } catch (error) {
+        console.log('Axios Error:', error.response?.data || error.message);
+
+        // Return backend error EXACTLY
+        if (error.response) {
+            return res
+                .status(error.response.status)
+                .json(error.response.data);
+        }
+
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+const sha256 = (data) => {
+    return crypto.createHash('sha256').update(String(data)).digest('hex');
+}
+
+function generateSignature(order_id, status, amount, partner_api_key) {
+    return sha256((sha256(order_id)+sha256(status)+sha256(amount)+sha256(partner_api_key)));
+}
+
+function generateSignatureCancelled(order_id, status, partner_api_key) {
+    return sha256((sha256(order_id)+sha256(status)+sha256(partner_api_key)));
+}
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
