@@ -18,8 +18,8 @@ exports.signInTeacher = async (req, res) => {
             return res.status(401).json({ message: 'Invalid email or password' });
         }
 
-        const accessToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        const refreshToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+        const accessToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_SECRET, { expiresIn: '10s' });
+        const refreshToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_REFRESH_SECRET, { expiresIn: '10s' });
 
         await pool.query('UPDATE staff SET refresh_token = ? WHERE id = ?', [refreshToken, staff.id]);
 
@@ -56,7 +56,7 @@ exports.refreshToken = async (req, res) => {
             }
 
             // Generate a new access token
-            const accessToken = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+            const accessToken = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '10s' });
 
             res.json({ accessToken });
         });

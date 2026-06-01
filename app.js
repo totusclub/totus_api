@@ -1,5 +1,9 @@
 const express = require('express');
+const https = require('https');
 const axios = require('axios');
+
+const vtbHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+const vtbAxiosConfig = { httpsAgent: vtbHttpsAgent };
 const cors = require('cors');
 const authRoutes = require('./routes/auth.routes');
 const adminAuthRoutes = require('./routes/authRoutes');
@@ -371,25 +375,33 @@ app.post('/vtb/create-order', async (req, res) => {
             return res.status(400).json({ error: "Missing required fields" });
         }
 
+
         const headers = {
-            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
-            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
+            "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
+            "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
             "Authorization": `Bearer ${data.access_token}`, // Replace with real token
             "Content-Type": "application/json"
         };
 
+        // const headers = {
+        //     "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
+        //     "Merchant-Authorization": "5f641d97-e5d9-49b9-8006-c2ea70e5d5de",
+        //     "Authorization": `Bearer ${data.access_token}`, // Replace with real token
+        //     "Content-Type": "application/json"
+        // };
         const payload = {
-            orderId,
-            orderName,
-            expire,
-            amount,
-            returnUrl
+            // qrTtl : "10",
+            // purpose:orderName,
+            // currency:'RUB',
+            amount: 10.01,//amount,
+            redirectUrl:returnUrl,
+            // subscriptionPurpose:'Назначение привязки счета'
         };
 
         const response = await axios.post(
-            "https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders",
+            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/static",
             payload,
-            { headers }
+            { headers, ...vtbAxiosConfig }
         );
 
         res.json(response.data);
@@ -405,20 +417,17 @@ const generationBankToken = async ()=>{
     try {
         const params = new URLSearchParams();
         params.append("grant_type", "client_credentials");
-        params.append("client_id", "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru");
-        params.append("client_secret", "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx");
-
+        params.append("client_id", "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru");
+        params.append("client_secret", "z7Me4yB+2LfDuF5'");
         const response = await axios.post(
-            "https://auth.bankingapi.ru/auth/realms/kubernetes/protocol/openid-connect/token",
+            "https://epa-ift-sbp.vtb.ru:443/passport/oauth2/token",
             params,
-            {
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                }
-            }
+            vtbAxiosConfig
         );
+        console.log("VTB Token Response:-----", response.data);
         return response.data
     } catch (error) {
+        console.log("VTB Token Error:", error.message);
         return error
     }
 }
@@ -629,18 +638,20 @@ app.post('/check_pay', async (req, res) => {
 
         // 1. Generate VTB token
         const tokenData = await generationBankToken();
+        console.log('tokenData',tokenData)
+        // return res.status(200).json({tokenData})
 
         const headers = {
-            "X-IBM-Client-Id": "ext.tstmst868.091dd0bd-ee4e-46db-b914-631c9a2d99cb@ext.vtb.ru",
-            "Merchant-Authorization": "YYIK4l4jgus9hSKlKO7XTxau6ttPRusx",
+            "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
+            "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
             "Authorization": `Bearer ${tokenData.access_token}`,
             "Content-Type": "application/json"
         };
 
         // 2. Get order from VTB
         const vtbResponse = await axios.get(
-            `https://hackaton.bankingapi.ru/api/smb/efcp/e-commerce/api/v1/orders/${orderId}`,
-            { headers }
+            `https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/${orderId}`,
+            { headers, ...vtbAxiosConfig }
         );
 
         const payment = vtbResponse?.data?.object;
@@ -804,6 +815,42 @@ function generateSignature(order_id, status, amount, partner_api_key) {
 function generateSignatureCancelled(order_id, status, partner_api_key) {
     return sha256((sha256(order_id)+sha256(status)+sha256(partner_api_key)));
 }
+
+const {
+    verifyPartnerApiKey,
+    processOrderNotify,
+    processOrderRefund,
+} = require('./utils/levelTravelWebhooks');
+
+// Level Travel → partner: order change notifications
+app.post('/tours/level_travel/notify', verifyPartnerApiKey, async (req, res) => {
+    try {
+        const result = await processOrderNotify(req.body);
+        return res.status(200).json(result);
+    } catch (error) {
+        console.error('LT notify error:', error.message, req.body);
+        const status = error.status || 500;
+        return res.status(status).json({
+            success: false,
+            error: error.message,
+        });
+    }
+});
+
+// Level Travel → partner: refund notification
+app.post('/tours/level_travel/order_refund', verifyPartnerApiKey, async (req, res) => {
+    try {
+        const result = await processOrderRefund(req.body);
+        return res.status(200).json(result);
+    } catch (error) {
+        console.error('LT order_refund error:', error.message, req.body);
+        const status = error.status || 500;
+        return res.status(status).json({
+            success: false,
+            error: error.message,
+        });
+    }
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
