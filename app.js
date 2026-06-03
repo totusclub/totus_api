@@ -369,42 +369,66 @@ app.post('/vtb/create-order', async (req, res) => {
             amount,
             returnUrl
         } = req.body;
-        const data = await generationBankToken()
+        const data = await generationBankToken();
 
         if (!orderId || !orderName || !expire || !amount?.value || !amount?.code || !returnUrl) {
             return res.status(400).json({ error: "Missing required fields" });
         }
 
+        if (!data?.access_token) {
+            return res.status(500).json({ error: "Failed to obtain VTB access token" });
+        }
 
         const headers = {
             "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
             "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
-            "Authorization": `Bearer ${data.access_token}`, // Replace with real token
+            "Authorization": `Bearer ${data.access_token}`,
             "Content-Type": "application/json"
         };
 
-        // const headers = {
-        //     "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
-        //     "Merchant-Authorization": "5f641d97-e5d9-49b9-8006-c2ea70e5d5de",
-        //     "Authorization": `Bearer ${data.access_token}`, // Replace with real token
-        //     "Content-Type": "application/json"
-        // };
-        const payload = {
-            // qrTtl : "10",
-            // purpose:orderName,
-            // currency:'RUB',
-            amount: 10.01,//amount,
-            redirectUrl:returnUrl,
-            // subscriptionPurpose:'Назначение привязки счета'
+        const requestId = String(orderId);
+        const vtbPayload = {
+            requestId,
+            qrTtl: "15",
+            purpose: orderName,
+            currency: "RUB",
+            amount: +amount.value,
+            redirectUrl: returnUrl,
         };
 
         const response = await axios.post(
-            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/static",
-            payload,
+            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
+            vtbPayload,
             { headers, ...vtbAxiosConfig }
         );
 
-        res.json(response.data);
+        const vtbBody = response.data || {};
+        const qrData = vtbBody.data || {};
+        const qrcId = qrData.qrcId || null;
+        const sbpPayload = qrData.payload || null;
+
+        const cleanOrderId = String(orderId).replace(/^ORDER/i, "");
+        if (qrcId && cleanOrderId) {
+            try {
+                await db.query(
+                    "UPDATE orders SET pay_status = ?, transaction_code = ? WHERE order_id = ?",
+                    ["CREATED", qrcId, cleanOrderId]
+                );
+            } catch (dbErr) {
+                console.error("VTB create-order DB update:", dbErr.message);
+            }
+        }
+
+        res.json({
+            ...vtbBody,
+            qrcId,
+            payload: sbpPayload,
+            payUrl: sbpPayload,
+            object: {
+                payUrl: sbpPayload,
+                qrcId,
+            },
+        });
     } catch (error) {
         console.error("VTB Order Creation Error:", error.response?.data || error.message);
         res.status(500).json({ error: "Failed to create VTB order" });
@@ -621,133 +645,186 @@ app.get('/home/data', async (req, res) => {
     }
 });
 
+function isVtbSbpPaid(info) {
+    const state = String(info?.state || info?.data?.state || "").toUpperCase();
+    if (state === "ACWP" || state === "OK") return true;
+    const statusVal = info?.status?.value || info?.data?.status?.value;
+    return statusVal === "RECONCILED";
+}
+
+function resolveVtbPayStatus(info) {
+    if (isVtbSbpPaid(info)) return "RECONCILED";
+    const state = info?.state || info?.data?.state;
+    if (state) return String(state).toUpperCase();
+    const statusVal = info?.status?.value || info?.data?.status?.value;
+    return statusVal || "PENDING";
+}
+
 app.post('/check_pay', async (req, res) => {
     try {
-        const { orderId } = req.body;
+        let { qrcId, orderId } = req.body;
+        const clean_order_id = orderId
+            ? String(orderId).replace(/^ORDER/i, "")
+            : null;
 
-        if (!orderId) {
+        if (!qrcId && clean_order_id) {
+            const [rows] = await db.query(
+                "SELECT pay_status, transaction_code FROM orders WHERE order_id = ? LIMIT 1",
+                [clean_order_id]
+            );
+            const existing = rows[0];
+            if (existing?.pay_status === "RECONCILED") {
+                return res.status(200).json({
+                    message: "Order already paid",
+                    status: "RECONCILED",
+                    paid: true,
+                    order_id: clean_order_id,
+                    notify_status: null,
+                    notify_result: null,
+                    notify_data: null,
+                    notify_error: null,
+                });
+            }
+            if (existing?.transaction_code) {
+                qrcId = existing.transaction_code;
+            }
+        }
+
+        if (!qrcId) {
             return res.status(200).json({
-                status: 'error',
-                message: "Missing required 'orderId'",
+                status: "error",
+                message: "Missing required 'qrcId' (or orderId with saved QR)",
                 notify_status: null,
                 notify_result: null,
                 notify_data: null,
-                notify_error: null
+                notify_error: null,
             });
         }
 
-        // 1. Generate VTB token
         const tokenData = await generationBankToken();
-        console.log('tokenData',tokenData)
-        // return res.status(200).json({tokenData})
+        if (!tokenData?.access_token) {
+            return res.status(200).json({
+                status: "error",
+                message: "Failed to obtain VTB access token",
+                notify_status: null,
+                notify_result: null,
+                notify_data: null,
+                notify_error: null,
+            });
+        }
 
         const headers = {
             "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
             "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
             "Authorization": `Bearer ${tokenData.access_token}`,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         };
 
-        // 2. Get order from VTB
-        const vtbResponse = await axios.get(
-            `https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/${orderId}`,
+        const vtbResponse = await axios.post(
+            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics/info",
+            { qrcId },
             { headers, ...vtbAxiosConfig }
         );
 
-        const payment = vtbResponse?.data?.object;
-
+        const payment = vtbResponse?.data?.data || vtbResponse?.data;
         if (!payment) {
             return res.status(200).json({
-                status: 'not_found',
-                message: 'No payment info found',
+                status: "not_found",
+                message: "No payment info found",
                 notify_status: null,
                 notify_result: null,
                 notify_data: null,
-                notify_error: null
+                notify_error: null,
             });
         }
 
-        // 3. Parse payment info
-        const pay_status = payment.status.value;
-        const transaction_id = payment.orderId;
-        const transaction_code = payment.orderCode;
-        const clean_order_id = transaction_id.replace('ORDER', '');
+        const pay_status = resolveVtbPayStatus(payment);
+        const paid = pay_status === "RECONCILED";
+        const requestId = payment.requestId || payment.orderId;
+        const resolved_order_id = clean_order_id || String(requestId || "").replace(/^ORDER/i, "");
+        const transaction_id = payment.transactionId || requestId;
+        const transaction_code = payment.orderCode || qrcId;
+        const amount = payment?.amount?.value ?? payment?.amount;
 
-        const amount = payment?.amount?.value;
-        const status = pay_status.toLowerCase();
-
-        // 4. Notify result placeholders
         let notify_status = null;
         let notify_result = null;
         let notify_data = null;
         let notify_error = null;
 
-        // 5. Notify external service if PAID
-        if (status === 'paid') {
+        let alreadyNotified = false;
+        if (resolved_order_id) {
+            const [rows] = await db.query(
+                "SELECT pay_status FROM orders WHERE order_id = ? LIMIT 1",
+                [resolved_order_id]
+            );
+            alreadyNotified = rows[0]?.pay_status === "RECONCILED";
+        }
+
+        if (paid && resolved_order_id && !alreadyNotified) {
             try {
+                const ltStatus = "paid";
                 const signature = generateSignature(
-                    clean_order_id,
-                    status,
+                    resolved_order_id,
+                    ltStatus,
                     amount,
                     "6a6ca82f341fea2a9d19b0d581c448e7"
                 );
 
-                const notifyPayload = {
-                    order_id: clean_order_id,
-                    status,
-                    amount,
-                    signature
-                };
-
                 const notifyResponse = await axios.post(
-                    `${BASE_URL}/orders/${clean_order_id}/notify`,
-                    notifyPayload,
+                    `${BASE_URL}/orders/${resolved_order_id}/notify`,
+                    {
+                        order_id: resolved_order_id,
+                        status: ltStatus,
+                        amount,
+                        signature,
+                    },
                     { headers: HEADERS }
                 );
 
                 notify_status = notifyResponse.status;
-                notify_result = 'ok';
+                notify_result = "ok";
                 notify_data = notifyResponse.data;
-
             } catch (notifyErr) {
                 notify_status = notifyErr.response?.status || 500;
-                notify_result = 'error';
+                notify_result = "error";
                 notify_error = notifyErr.response?.data || notifyErr.message;
             }
         }
 
-        // 6. Update DB (non-blocking)
-        try {
-            await db.query(
-                'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
-                [pay_status, transaction_id, transaction_code, clean_order_id]
-            );
-        } catch (dbErr) {
-            console.error('DB update failed:', dbErr);
+        if (resolved_order_id) {
+            try {
+                await db.query(
+                    "UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?",
+                    [pay_status, transaction_id, transaction_code, resolved_order_id]
+                );
+            } catch (dbErr) {
+                console.error("DB update failed:", dbErr);
+            }
         }
 
-        // 7. Final response (always 200)
         return res.status(200).json({
-            message: 'Order status checked',
+            message: "Order status checked",
             status: pay_status,
+            paid,
+            qrcId,
+            order_id: resolved_order_id,
             transaction_id,
             transaction_code,
             notify_status,
             notify_result,
             notify_data,
-            notify_error
+            notify_error,
         });
-
     } catch (err) {
-        console.error('VTB check_pay error:', err.response?.data || err.message);
+        console.error("VTB check_pay error:", err.response?.data || err.message);
 
         return res.status(200).json({
-            status: 'error',
-            message: 'Failed to check payment status',
+            status: "error",
+            message: "Failed to check payment status",
             notify_status: null,
             notify_result: null,
             notify_data: null,
-            notify_error: err.message
+            notify_error: err.message,
         });
     }
 });
@@ -821,6 +898,23 @@ const {
     processOrderNotify,
     processOrderRefund,
 } = require('./utils/levelTravelWebhooks');
+const { processVtbCallback } = require('./utils/vtbCallback');
+
+// VTB SBP: final payment/refund status callback from bank
+app.post('/vtb/callback', async (req, res) => {
+    try {
+        console.log('VTB callback received:', JSON.stringify(req.body));
+        const result = await processVtbCallback(req.body);
+        return res.status(200).json(result);
+    } catch (error) {
+        console.error('VTB callback error:', error.message, req.body);
+        const status = error.status || 500;
+        return res.status(status).json({
+            success: false,
+            error: error.message,
+        });
+    }
+});
 
 // Level Travel → partner: order change notifications
 app.post('/tours/level_travel/notify', verifyPartnerApiKey, async (req, res) => {
