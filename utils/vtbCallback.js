@@ -45,6 +45,7 @@ async function notifyLevelTravelPaid(orderId, amount) {
       { order_id: clean_order_id, status, amount, signature },
       { headers: LT_HEADERS }
     );
+      console.log('level travle not ',{ result: 'ok', status: response.status, data: response.data })
     return { result: 'ok', status: response.status, data: response.data };
   } catch (err) {
     return {
@@ -96,6 +97,7 @@ async function processVtbCallback(payload) {
       }
 
       if (payStatus === 'RECONCILED' && !duplicate) {
+          console.log(`Notifying Level Travel about payment for order ${orderId} with amount ${amount}`);
         ltNotify = await notifyLevelTravelPaid(orderId, amount);
       }
     }
