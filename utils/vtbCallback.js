@@ -70,47 +70,51 @@ async function processVtbCallback(payload) {
   const transactionId = String(object.orderId ?? object.paymentId ?? '');
   const transactionCode = object.orderCode || object.paymentCode || null;
   const amount = object.amount?.value ?? null;
-
-  if (type === 'PAYMENT') {
     let ltNotify = null;
-    let duplicate = false;
-
-    if (orderId) {
-      const [rows] = await db.query(
-        'SELECT pay_status, transaction_code FROM orders WHERE order_id = ? LIMIT 1',
-        [orderId]
-      );
-      const existing = rows[0];
-
-      if (
-        existing &&
-        existing.pay_status === 'RECONCILED' &&
-        payStatus === 'RECONCILED' &&
-        existing.transaction_code === transactionCode
-      ) {
-        duplicate = true;
-      } else {
-        await db.query(
-          'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
-          [payStatus, transactionId, transactionCode, orderId]
-        );
-      }
-
-      if (payStatus === 'RECONCILED' && !duplicate) {
-          console.log(`Notifying Level Travel about payment for order ${orderId} with amount ${amount}`);
-        ltNotify = await notifyLevelTravelPaid(orderId, amount);
-      }
-    }
-
-    return {
-      success: true,
-      type,
-      order_id: orderId,
-      pay_status: payStatus,
-      duplicate,
-      lt_notify: ltNotify,
-    };
-  }
+    console.log('orderId',orderId)
+    console.log('amount',amount)
+    ltNotify = await notifyLevelTravelPaid(orderId, amount);
+  // if (type === 'PAYMENT') {
+  //
+  //   // let ltNotify = null;
+  //   let duplicate = false;
+  //
+  //   if (orderId) {
+  //     const [rows] = await db.query(
+  //       'SELECT pay_status, transaction_code FROM orders WHERE order_id = ? LIMIT 1',
+  //       [orderId]
+  //     );
+  //     const existing = rows[0];
+  //
+  //     if (
+  //       existing &&
+  //       existing.pay_status === 'RECONCILED' &&
+  //       payStatus === 'RECONCILED' &&
+  //       existing.transaction_code === transactionCode
+  //     ) {
+  //       duplicate = true;
+  //     } else {
+  //       await db.query(
+  //         'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
+  //         [payStatus, transactionId, transactionCode, orderId]
+  //       );
+  //     }
+  //       console.log('payStatus',duplicate)
+  //     if (payStatus === 'RECONCILED' && !duplicate) {
+  //         console.log(`Notifying Level Travel about payment for order ${orderId} with amount ${amount}`);
+  //       ltNotify = await notifyLevelTravelPaid(orderId, amount);
+  //     }
+  //   }
+  //
+  //   return {
+  //     success: true,
+  //     type,
+  //     order_id: orderId,
+  //     pay_status: payStatus,
+  //     duplicate,
+  //     lt_notify: ltNotify,
+  //   };
+  // }
 
   if (type === 'REFUND') {
     if (orderId) {
