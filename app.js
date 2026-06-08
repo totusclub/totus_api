@@ -144,6 +144,23 @@ app.get('/references/hotel_dump', async (req, res) => {
     }
 });
 
+app.get('/references/hotel_reviews/:hotel_id', async (req, res) => {
+    try {
+        const { hotel_id } = req.params;
+        const { page, per_page } = req.query;
+        const response = await axios.get(`${BASE_URL}/references/hotel_reviews/${hotel_id}`, {
+            params: { page, per_page },
+            headers: HEADERS,
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error hotel_reviews:', error.message);
+        const status = error.response?.status || 500;
+        const data = error.response?.data || { success: false, error: 'Failed hotel_reviews' };
+        res.status(status).json(data);
+    }
+});
+
 app.get('/references/flights_and_nights', async (req, res) => {
     try {
         const response = await axios.get(`${BASE_URL}/references/flights_and_nights`, {
@@ -380,10 +397,10 @@ app.post('/vtb/create-order', async (req, res) => {
         }
 
         const headers = {
-            "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
-            "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
+            "X-IBM-Client-Id": "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru",
+            "Merchant-Authorization": "93f69779-51bd-4787-acd7-c8573cdbdc9c",
             "Authorization": `Bearer ${data.access_token}`,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         };
 
         const requestId = String(orderId);
@@ -397,7 +414,7 @@ app.post('/vtb/create-order', async (req, res) => {
         };
 
         const response = await axios.post(
-            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
+            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
             vtbPayload,
             { headers, ...vtbAxiosConfig }
         );
@@ -441,10 +458,10 @@ const generationBankToken = async ()=>{
     try {
         const params = new URLSearchParams();
         params.append("grant_type", "client_credentials");
-        params.append("client_id", "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru");
-        params.append("client_secret", "z7Me4yB+2LfDuF5'");
+        params.append("client_id", "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru");
+        params.append("client_secret", "XMB2l-jkg2RO20(U");
         const response = await axios.post(
-            "https://epa-ift-sbp.vtb.ru:443/passport/oauth2/token",
+            "https://open.api.vtb.ru:443/passport/oauth2/token",
             params,
             vtbAxiosConfig
         );
@@ -714,14 +731,14 @@ app.post('/check_pay', async (req, res) => {
         }
 
         const headers = {
-            "X-IBM-Client-Id": "ext.cmm.3e9d5109-dae7-4b66-b740-63ed7782e947@ext.vtb.ru",
-            "Merchant-Authorization": "ee6d0ea4-3dec-4bf5-a86b-08a85fda3548",
+            "X-IBM-Client-Id": "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru",
+            "Merchant-Authorization": "93f69779-51bd-4787-acd7-c8573cdbdc9c",
             "Authorization": `Bearer ${tokenData.access_token}`,
             "Content-Type": "application/json",
         };
 
         const vtbResponse = await axios.post(
-            "https://test3.api.vtb.ru:8443/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics/info",
+            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
             { qrcId },
             { headers, ...vtbAxiosConfig }
         );
@@ -952,7 +969,7 @@ app.use('/api/admin', faqRoutes);
 app.use('/api/admin', popularRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/admin/pages', pagesRoutes);
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);
 });
