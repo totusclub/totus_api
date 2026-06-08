@@ -27,9 +27,9 @@ function cleanOrderId(orderId) {
 
 async function notifyLevelTravelPaid(orderId, amount) {
   const clean_order_id = cleanOrderId(orderId);
-  if (!clean_order_id) {
-    return { result: 'skipped', reason: 'no_order_id' };
-  }
+  // if (!clean_order_id) {
+  //   return { result: 'skipped', reason: 'no_order_id' };
+  // }
 
   const status = 'paid';
   const signature = generateSignature(
@@ -45,9 +45,10 @@ async function notifyLevelTravelPaid(orderId, amount) {
       { order_id: clean_order_id, status, amount, signature },
       { headers: LT_HEADERS }
     );
-      console.log('level travle not ',{ result: 'ok', status: response.status, data: response.data })
+      console.log('level travle ik ',{ result: 'ok', status: response.status, data: response.data })
     return { result: 'ok', status: response.status, data: response.data };
   } catch (err) {
+      console.log('level travle error ',{ result: 'error', status: err.response?.status || 500, error: err.response?.data || err.message })
     return {
       result: 'error',
       status: err.response?.status || 500,
