@@ -405,14 +405,14 @@ app.post('/vtb/create-order', async (req, res) => {
 
         const requestId = String(orderId);
         const vtbPayload = {
-            requestId,
-            qrTtl: "15",
-            purpose: orderName,
-            currency: "RUB",
             amount: +amount.value,
-            redirectUrl: returnUrl,
+            currency: "RUB",
+            qrTtl: "15",
+            purpose: requestId,
+            subscriptionPurpose:'Назначение платежа',
+            redirectUrl: 'https://totus.club',
         };
-
+        // requestId,
         const response = await axios.post(
             "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
             vtbPayload,
