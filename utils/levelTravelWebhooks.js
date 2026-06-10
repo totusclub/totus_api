@@ -1,4 +1,8 @@
 const db = require('../db');
+const {
+  saveAttachmentsForOrder,
+  mergeLocalAttachments,
+} = require('./orderDocuments');
 
 const PARTNER_API_KEY =
   process.env.PARTNER_API_KEY || '589e52d73074435f9fc8202b7ec80673';
@@ -147,6 +151,7 @@ async function processOrderNotify(body) {
 
   const order = await findOrderByLtId(order_id);
   let newState = null;
+  let savedDocuments = [];
 
   if (order) {
     let pkg = {};
@@ -156,7 +161,20 @@ async function processOrderNotify(body) {
       pkg = {};
     }
 
+    if (event === 'documents' || changes?.attachments) {
+      savedDocuments = await saveAttachmentsForOrder(
+        order_id,
+        changes,
+        event,
+        event_reference
+      );
+    }
+
     pkg = applyChangesToPackage(pkg, changes, event);
+
+    if (savedDocuments.length) {
+      pkg = mergeLocalAttachments(pkg, savedDocuments);
+    }
 
     if (Array.isArray(changes?.state) && changes.state.length >= 2) {
       newState = changes.state[1];
@@ -185,6 +203,7 @@ async function processOrderNotify(body) {
     success: true,
     order_found: Boolean(order),
     order_state: newState,
+    saved_documents: savedDocuments,
   };
 }
 

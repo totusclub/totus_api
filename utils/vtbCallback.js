@@ -20,20 +20,94 @@ function generateSignature(order_id, status, amount, partner_api_key) {
   );
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(value)
+  );
+}
+
+function parseOrderIdFromText(value) {
+  if (value == null || value === 'n/a') return null;
+  const str = String(value).trim();
+  const orderMatch = str.match(/ORDER(\d+)/i);
+  if (orderMatch) return orderMatch[1];
+  const cleaned = str.replace(/^ORDER/i, '');
+  if (/^\d+$/.test(cleaned)) return cleaned;
+  return null;
+}
+
 function cleanOrderId(orderId) {
   if (orderId == null || orderId === 'n/a') return null;
+  const fromText = parseOrderIdFromText(orderId);
+  if (fromText) return fromText;
+  if (isUuid(orderId)) return null;
   return String(orderId).replace(/^ORDER/i, '');
 }
 
-async function notifyLevelTravelPaid(orderId, amount) {
-  const clean_order_id = cleanOrderId(orderId);
-  // if (!clean_order_id) {
-  //   return { result: 'skipped', reason: 'no_order_id' };
-  // }
+function parseAmount(value) {
+  if (value == null) return null;
+  const str = String(value).replace(/[^\d.,]/g, '').replace(',', '.');
+  const num = parseFloat(str);
+  return Number.isFinite(num) ? num : null;
+}
+
+function resolveLtOrderId(object) {
+  const candidates = [
+    object.description,
+    object.orderId,
+    object.sbpParams?.paymentPurpose,
+    object.sbpParams?.requestId,
+  ];
+
+  for (const raw of candidates) {
+    const id = cleanOrderId(raw) || parseOrderIdFromText(raw);
+    if (id) return id;
+  }
+  return null;
+}
+
+async function findOrderInDb(object) {
+  const sbp = object.sbpParams || {};
+  const qrcId = sbp.qrcId;
+  const parsedId = resolveLtOrderId(object);
+  const paymentId = object.paymentId || sbp.transactionId;
+
+  if (qrcId) {
+    const [rows] = await db.query(
+      'SELECT order_id, pay_status, transaction_code FROM orders WHERE transaction_code = ? LIMIT 1',
+      [qrcId]
+    );
+    if (rows[0]) return rows[0];
+  }
+
+  if (parsedId) {
+    const [rows] = await db.query(
+      'SELECT order_id, pay_status, transaction_code FROM orders WHERE order_id = ? LIMIT 1',
+      [parsedId]
+    );
+    if (rows[0]) return rows[0];
+  }
+
+  if (paymentId) {
+    const [rows] = await db.query(
+      'SELECT order_id, pay_status, transaction_code FROM orders WHERE transaction_id = ? LIMIT 1',
+      [String(paymentId)]
+    );
+    if (rows[0]) return rows[0];
+  }
+
+  return null;
+}
+
+async function notifyLevelTravelPaid(dbOrderId, amount) {
+  const orderId = String(dbOrderId);
+  if (!orderId) {
+    return { result: 'skipped', reason: 'no_order_id' };
+  }
 
   const status = 'paid';
   const signature = generateSignature(
-    clean_order_id,
+    orderId,
     status,
     amount,
     LT_PARTNER_API_KEY
@@ -41,16 +115,15 @@ async function notifyLevelTravelPaid(orderId, amount) {
 
   try {
     const response = await axios.post(
-      `${LT_BASE_URL}/orders/${clean_order_id}/notify`,
-      { order_id: clean_order_id, status, amount, signature },
+      `${LT_BASE_URL}/orders/${orderId}/notify`,
+      { order_id: orderId, status, amount, signature },
       { headers: LT_HEADERS }
     );
-      console.log('level travle ik ',{ result: 'ok', status: response.status, data: response.data })
-    return { result: 'ok', status: response.status, data: response.data };
+    return { result: 'ok', order_id: orderId, status: response.status, data: response.data };
   } catch (err) {
-      console.log('level travle error ',{ result: 'error', status: err.response?.status || 500, error: err.response?.data || err.message })
     return {
       result: 'error',
+      order_id: orderId,
       status: err.response?.status || 500,
       error: err.response?.data || err.message,
     };
@@ -58,7 +131,10 @@ async function notifyLevelTravelPaid(orderId, amount) {
 }
 
 async function processVtbCallback(payload) {
-  const { type, object } = payload;
+  const type = String(payload?.type || '')
+    .trim()
+    .toUpperCase();
+  const object = payload?.object;
 
   if (!type || !object) {
     const err = new Error('Invalid callback: missing type or object');
@@ -67,73 +143,67 @@ async function processVtbCallback(payload) {
   }
 
   const payStatus = object.status?.value || null;
-  const orderId = cleanOrderId(object.orderId);
-  const transactionId = String(object.orderId ?? object.paymentId ?? '');
-  const transactionCode = object.orderCode || object.paymentCode || null;
-  const amount = object.amount?.value ?? null;
+  const sbp = object.sbpParams || {};
+  const dbOrder = await findOrderInDb(object);
+  const dbOrderId = dbOrder?.order_id ?? null;
+
+  const transactionId =
+    object.paymentId || sbp.transactionId || object.orderId || '';
+  const transactionCode = sbp.qrcId || object.paymentCode || object.orderCode;
+  const amount = parseAmount(object.amount?.value ?? sbp.amount);
+
+  if (type === 'PAYMENT') {
+    let duplicate = false;
     let ltNotify = null;
-    console.log('orderId',orderId)
-    console.log('amount',amount)
-    ltNotify = await notifyLevelTravelPaid(orderId, amount);
-  // if (type === 'PAYMENT') {
-  //
-  //   // let ltNotify = null;
-  //   let duplicate = false;
-  //
-  //   if (orderId) {
-  //     const [rows] = await db.query(
-  //       'SELECT pay_status, transaction_code FROM orders WHERE order_id = ? LIMIT 1',
-  //       [orderId]
-  //     );
-  //     const existing = rows[0];
-  //
-  //     if (
-  //       existing &&
-  //       existing.pay_status === 'RECONCILED' &&
-  //       payStatus === 'RECONCILED' &&
-  //       existing.transaction_code === transactionCode
-  //     ) {
-  //       duplicate = true;
-  //     } else {
-  //       await db.query(
-  //         'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
-  //         [payStatus, transactionId, transactionCode, orderId]
-  //       );
-  //     }
-  //       console.log('payStatus',duplicate)
-  //     if (payStatus === 'RECONCILED' && !duplicate) {
-  //         console.log(`Notifying Level Travel about payment for order ${orderId} with amount ${amount}`);
-  //       ltNotify = await notifyLevelTravelPaid(orderId, amount);
-  //     }
-  //   }
-  //
-  //   return {
-  //     success: true,
-  //     type,
-  //     order_id: orderId,
-  //     pay_status: payStatus,
-  //     duplicate,
-  //     lt_notify: ltNotify,
-  //   };
-  // }
+
+    if (dbOrderId) {
+      if (
+        dbOrder.pay_status === 'RECONCILED' &&
+        payStatus === 'RECONCILED' &&
+        dbOrder.transaction_code === transactionCode
+      ) {
+        duplicate = true;
+      } else {
+        await db.query(
+          'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
+          [payStatus, String(transactionId), transactionCode, dbOrderId]
+        );
+      }
+
+      if (payStatus === 'RECONCILED' && !duplicate) {
+        ltNotify = await notifyLevelTravelPaid(dbOrderId, amount);
+      }
+    }
+
+    return {
+      success: true,
+      type,
+      order_id: dbOrderId,
+      pay_status: payStatus,
+      duplicate,
+      order_found: Boolean(dbOrderId),
+      lt_notify: ltNotify,
+    };
+  }
 
   if (type === 'REFUND') {
-    if (orderId) {
+    if (dbOrderId) {
       await db.query(
         `UPDATE orders
          SET pay_status = ?, transaction_id = ?, transaction_code = ?,
              refund_amount = COALESCE(?, refund_amount), refund_at = NOW()
          WHERE order_id = ?`,
-        [payStatus, transactionId, transactionCode, amount, orderId]
+        [payStatus, String(transactionId), transactionCode, amount, dbOrderId]
       );
     }
 
     return {
       success: true,
       type,
-      order_id: orderId,
+      order_id: dbOrderId,
       pay_status: payStatus,
       refund_amount: amount,
+      order_found: Boolean(dbOrderId),
     };
   }
 
@@ -142,4 +212,10 @@ async function processVtbCallback(payload) {
   throw err;
 }
 
-module.exports = { processVtbCallback, cleanOrderId };
+module.exports = {
+  processVtbCallback,
+  findOrderInDb,
+  cleanOrderId,
+  resolveLtOrderId,
+  parseOrderIdFromText,
+};

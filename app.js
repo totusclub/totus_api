@@ -560,6 +560,22 @@ app.get('/orders', async (req, res) => {
         res.status(500).json({ error: 'Failed departures' });
     }
 });
+
+app.get('/orders/documents', async (req, res) => {
+    try {
+        const orderId = Number(req.query.order_id);
+        if (!Number.isFinite(orderId)) {
+            return res.status(400).json({ error: 'Missing or invalid order_id' });
+        }
+
+        const { getOrderDocuments } = require('./utils/orderDocuments');
+        const documents = await getOrderDocuments(orderId);
+        res.json({ order_id: orderId, documents });
+    } catch (error) {
+        console.error('Error order documents:', error.message);
+        res.status(500).json({ error: 'Failed to get order documents' });
+    }
+});
 app.get('/user/orders', async (req, res) => {
     try {
         const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [req.query.user_id]);
