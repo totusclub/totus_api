@@ -3,6 +3,10 @@ const {
   saveAttachmentsForOrder,
   mergeLocalAttachments,
 } = require('./orderDocuments');
+const { logCallback, logCallbackError } = require('./callbackLogger');
+
+const LOG_NOTIFY = 'LT_NOTIFY';
+const LOG_REFUND = 'LT_REFUND';
 
 const PARTNER_API_KEY =
   process.env.PARTNER_API_KEY || '589e52d73074435f9fc8202b7ec80673';
@@ -10,6 +14,10 @@ const PARTNER_API_KEY =
 function verifyPartnerApiKey(req, res, next) {
   const key = req.headers['partner-api-key'];
   if (!key || key !== PARTNER_API_KEY) {
+    logCallbackError(LOG_NOTIFY, 'AUTH', 'Rejected — invalid Partner-Api-Key', {
+      path: req.path,
+      has_key: Boolean(key),
+    });
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
   next();
@@ -137,7 +145,17 @@ async function processOrderNotify(body) {
 
   const order_id = Number(rawOrderId);
 
+  logCallback(LOG_NOTIFY, 'IN', 'Level Travel notify received', {
+    order_id: rawOrderId,
+    event,
+    event_reference,
+    message,
+    has_changes: Boolean(changes),
+    state_change: changes?.state,
+  });
+
   if (!Number.isFinite(order_id) || !event || !event_timestamp || !event_reference) {
+    logCallbackError(LOG_NOTIFY, 'ERROR', 'Invalid payload — missing required fields', body);
     const err = new Error(
       'Missing required fields: order_id, event, event_timestamp, event_reference'
     );
@@ -146,6 +164,10 @@ async function processOrderNotify(body) {
   }
 
   if (await isDuplicateReference(event_reference)) {
+    logCallback(LOG_NOTIFY, 'SKIP', 'Duplicate event — already processed', {
+      order_id,
+      event_reference,
+    });
     return { success: true, duplicate: true };
   }
 
@@ -162,12 +184,21 @@ async function processOrderNotify(body) {
     }
 
     if (event === 'documents' || changes?.attachments) {
+      logCallback(LOG_NOTIFY, 'DOCS', 'Downloading attachments', {
+        order_id,
+        event,
+      });
       savedDocuments = await saveAttachmentsForOrder(
         order_id,
         changes,
         event,
         event_reference
       );
+      logCallback(LOG_NOTIFY, 'DOCS', 'Attachments saved', {
+        order_id,
+        count: savedDocuments.length,
+        files: savedDocuments.map((d) => d.public_url || d.error),
+      });
     }
 
     pkg = applyChangesToPackage(pkg, changes, event);
@@ -186,6 +217,13 @@ async function processOrderNotify(body) {
       'UPDATE orders SET package = ?, order_state = COALESCE(?, order_state) WHERE order_id = ?',
       [JSON.stringify(pkg), newState, order_id]
     );
+    logCallback(LOG_NOTIFY, 'DB', 'Order updated', {
+      order_id,
+      order_state: newState,
+      event,
+    });
+  } else {
+    logCallback(LOG_NOTIFY, 'DB', 'Order NOT found — event logged only', { order_id });
   }
 
   await logEvent({
@@ -199,19 +237,29 @@ async function processOrderNotify(body) {
     payload: body,
   });
 
-  return {
+  const result = {
     success: true,
     order_found: Boolean(order),
     order_state: newState,
     saved_documents: savedDocuments,
   };
+  logCallback(LOG_NOTIFY, 'OUT', 'Notify processed', result);
+  return result;
 }
 
 async function processOrderRefund(body) {
   const { order_id: rawOrderId, timestamp, request_reference, amount } = body;
   const order_id = Number(rawOrderId);
 
+  logCallback(LOG_REFUND, 'IN', 'Level Travel refund received', {
+    order_id: rawOrderId,
+    request_reference,
+    amount,
+    timestamp,
+  });
+
   if (!Number.isFinite(order_id) || !timestamp || !request_reference || amount == null) {
+    logCallbackError(LOG_REFUND, 'ERROR', 'Invalid payload — missing required fields', body);
     const err = new Error(
       'Missing required fields: order_id, timestamp, request_reference, amount'
     );
@@ -220,6 +268,10 @@ async function processOrderRefund(body) {
   }
 
   if (await isDuplicateReference(request_reference)) {
+    logCallback(LOG_REFUND, 'SKIP', 'Duplicate refund — already processed', {
+      order_id,
+      request_reference,
+    });
     return { success: true, duplicate: true };
   }
 
@@ -230,6 +282,9 @@ async function processOrderRefund(body) {
       `UPDATE orders SET refund_amount = ?, refund_at = FROM_UNIXTIME(?) WHERE order_id = ?`,
       [amount, timestamp, order_id]
     );
+    logCallback(LOG_REFUND, 'DB', 'Order refund updated', { order_id, refund_amount: amount });
+  } else {
+    logCallback(LOG_REFUND, 'DB', 'Order NOT found — refund logged only', { order_id });
   }
 
   await logEvent({
@@ -243,11 +298,13 @@ async function processOrderRefund(body) {
     payload: body,
   });
 
-  return {
+  const result = {
     success: true,
     order_found: Boolean(order),
     refund_amount: amount,
   };
+  logCallback(LOG_REFUND, 'OUT', 'Refund processed', result);
+  return result;
 }
 
 module.exports = {

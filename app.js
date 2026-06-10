@@ -933,14 +933,15 @@ const {
 } = require('./utils/levelTravelWebhooks');
 const { processVtbCallback } = require('./utils/vtbCallback');
 
+const { logCallback, logCallbackError } = require('./utils/callbackLogger');
+
 // VTB SBP: final payment/refund status callback from bank
 app.post('/vtb/callback', async (req, res) => {
     try {
-        console.log('VTB callback received:', JSON.stringify(req.body));
         const result = await processVtbCallback(req.body);
         return res.status(200).json(result);
     } catch (error) {
-        console.error('VTB callback error:', error.message, req.body);
+        logCallbackError('VTB_CALLBACK', 'HTTP_ERROR', error.message, req.body);
         const status = error.status || 500;
         return res.status(status).json({
             success: false,
@@ -955,7 +956,7 @@ app.post('/tours/level_travel/notify', verifyPartnerApiKey, async (req, res) => 
         const result = await processOrderNotify(req.body);
         return res.status(200).json(result);
     } catch (error) {
-        console.error('LT notify error:', error.message, req.body);
+        logCallbackError('LT_NOTIFY', 'HTTP_ERROR', error.message, req.body);
         const status = error.status || 500;
         return res.status(status).json({
             success: false,
@@ -970,7 +971,7 @@ app.post('/tours/level_travel/order_refund', verifyPartnerApiKey, async (req, re
         const result = await processOrderRefund(req.body);
         return res.status(200).json(result);
     } catch (error) {
-        console.error('LT order_refund error:', error.message, req.body);
+        logCallbackError('LT_REFUND', 'HTTP_ERROR', error.message, req.body);
         const status = error.status || 500;
         return res.status(status).json({
             success: false,
@@ -988,4 +989,7 @@ app.use('/api/admin/pages', pagesRoutes);
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);
+    console.log(`[CALLBACKS] VTB bank:     POST /vtb/callback`);
+    console.log(`[CALLBACKS] Level Travel: POST /tours/level_travel/notify`);
+    console.log(`[CALLBACKS] Level Travel: POST /tours/level_travel/order_refund`);
 });

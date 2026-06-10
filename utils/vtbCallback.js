@@ -1,6 +1,9 @@
 const db = require('../db');
 const axios = require('axios');
 const crypto = require('crypto');
+const { logCallback, logCallbackError } = require('./callbackLogger');
+
+const LOG = 'VTB_CALLBACK';
 
 const LT_BASE_URL = 'https://api.level.travel';
 const LT_PARTNER_API_KEY =
@@ -102,6 +105,7 @@ async function findOrderInDb(object) {
 async function notifyLevelTravelPaid(dbOrderId, amount) {
   const orderId = String(dbOrderId);
   if (!orderId) {
+    logCallback(LOG, 'LT_NOTIFY', 'NOT sent — no order_id');
     return { result: 'skipped', reason: 'no_order_id' };
   }
 
@@ -113,14 +117,30 @@ async function notifyLevelTravelPaid(dbOrderId, amount) {
     LT_PARTNER_API_KEY
   );
 
+  logCallback(LOG, 'LT_NOTIFY', 'Sending payment notify to Level Travel', {
+    order_id: orderId,
+    amount,
+    status,
+  });
+
   try {
     const response = await axios.post(
       `${LT_BASE_URL}/orders/${orderId}/notify`,
       { order_id: orderId, status, amount, signature },
       { headers: LT_HEADERS }
     );
+    logCallback(LOG, 'LT_NOTIFY', 'OK — Level Travel accepted payment', {
+      order_id: orderId,
+      http_status: response.status,
+      data: response.data,
+    });
     return { result: 'ok', order_id: orderId, status: response.status, data: response.data };
   } catch (err) {
+    logCallbackError(LOG, 'LT_NOTIFY', 'FAILED — Level Travel rejected payment', {
+      order_id: orderId,
+      http_status: err.response?.status || 500,
+      error: err.response?.data || err.message,
+    });
     return {
       result: 'error',
       order_id: orderId,
@@ -136,7 +156,18 @@ async function processVtbCallback(payload) {
     .toUpperCase();
   const object = payload?.object;
 
+  logCallback(LOG, 'IN', 'Bank callback received', {
+    type,
+    paymentId: object?.paymentId,
+    orderId: object?.orderId,
+    description: object?.description,
+    pay_status: object?.status?.value,
+    qrcId: object?.sbpParams?.qrcId,
+    amount: object?.amount?.value,
+  });
+
   if (!type || !object) {
+    logCallbackError(LOG, 'ERROR', 'Invalid payload — missing type or object');
     const err = new Error('Invalid callback: missing type or object');
     err.status = 400;
     throw err;
@@ -146,6 +177,12 @@ async function processVtbCallback(payload) {
   const sbp = object.sbpParams || {};
   const dbOrder = await findOrderInDb(object);
   const dbOrderId = dbOrder?.order_id ?? null;
+
+  logCallback(LOG, 'DB', dbOrderId ? 'Order found in DB' : 'Order NOT found in DB', {
+    db_order_id: dbOrderId,
+    parsed_from_description: resolveLtOrderId(object),
+    qrcId: sbp.qrcId,
+  });
 
   const transactionId =
     object.paymentId || sbp.transactionId || object.orderId || '';
@@ -163,19 +200,35 @@ async function processVtbCallback(payload) {
         dbOrder.transaction_code === transactionCode
       ) {
         duplicate = true;
+        logCallback(LOG, 'SKIP', 'Duplicate payment callback — already RECONCILED', {
+          order_id: dbOrderId,
+          transaction_code: transactionCode,
+        });
       } else {
         await db.query(
           'UPDATE orders SET pay_status = ?, transaction_id = ?, transaction_code = ? WHERE order_id = ?',
           [payStatus, String(transactionId), transactionCode, dbOrderId]
         );
+        logCallback(LOG, 'DB', 'Order payment fields updated', {
+          order_id: dbOrderId,
+          pay_status: payStatus,
+          transaction_id: transactionId,
+          transaction_code: transactionCode,
+        });
       }
 
       if (payStatus === 'RECONCILED' && !duplicate) {
         ltNotify = await notifyLevelTravelPaid(dbOrderId, amount);
+      } else if (payStatus !== 'RECONCILED') {
+        logCallback(LOG, 'LT_NOTIFY', 'NOT sent — payment not RECONCILED', {
+          pay_status: payStatus,
+        });
       }
+    } else {
+      logCallback(LOG, 'LT_NOTIFY', 'NOT sent — order not found in DB');
     }
 
-    return {
+    const result = {
       success: true,
       type,
       order_id: dbOrderId,
@@ -184,6 +237,8 @@ async function processVtbCallback(payload) {
       order_found: Boolean(dbOrderId),
       lt_notify: ltNotify,
     };
+    logCallback(LOG, 'OUT', 'Bank callback processed', result);
+    return result;
   }
 
   if (type === 'REFUND') {
@@ -195,9 +250,16 @@ async function processVtbCallback(payload) {
          WHERE order_id = ?`,
         [payStatus, String(transactionId), transactionCode, amount, dbOrderId]
       );
+      logCallback(LOG, 'DB', 'Order refund fields updated', {
+        order_id: dbOrderId,
+        pay_status: payStatus,
+        refund_amount: amount,
+      });
+    } else {
+      logCallback(LOG, 'DB', 'Refund callback — order NOT found in DB');
     }
 
-    return {
+    const result = {
       success: true,
       type,
       order_id: dbOrderId,
@@ -205,8 +267,11 @@ async function processVtbCallback(payload) {
       refund_amount: amount,
       order_found: Boolean(dbOrderId),
     };
+    logCallback(LOG, 'OUT', 'Bank refund callback processed', result);
+    return result;
   }
 
+  logCallbackError(LOG, 'ERROR', `Unsupported callback type: ${type}`);
   const err = new Error(`Unsupported callback type: ${type}`);
   err.status = 400;
   throw err;
