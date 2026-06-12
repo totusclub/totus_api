@@ -6,6 +6,16 @@ const db = require('../db');
 
 const ORDERS_UPLOAD_DIR = path.join(__dirname, '..', 'uploads', 'orders');
 
+function normalizeDownloadUrl(url) {
+  if (!url) return null;
+  let value = String(url).trim();
+  if (value.startsWith('//')) value = `https:${value}`;
+  if (!/^https?:\/\//i.test(value)) {
+    value = `https://${value.replace(/^\/+/, '')}`;
+  }
+  return value;
+}
+
 function sanitizeFilename(name) {
   const base = String(name || 'document.pdf').trim();
   const withExt = base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`;
@@ -42,7 +52,7 @@ async function documentExists(orderId, sourceUrl) {
 }
 
 async function downloadAndSaveDocument(orderId, attachment, eventReference) {
-  const sourceUrl = attachment?.url;
+  const sourceUrl = normalizeDownloadUrl(attachment?.url);
   if (!sourceUrl) return null;
 
   const existing = await documentExists(orderId, sourceUrl);
@@ -75,7 +85,13 @@ async function downloadAndSaveDocument(orderId, attachment, eventReference) {
   const response = await axios.get(sourceUrl, {
     responseType: 'arraybuffer',
     timeout: 120000,
-    maxRedirects: 5,
+    maxRedirects: 10,
+    headers: {
+      Accept: 'application/pdf,application/octet-stream,*/*',
+      'User-Agent': 'Mozilla/5.0 (compatible; TotusAPI/1.0)',
+      Referer: 'https://level.travel/',
+    },
+    validateStatus: (status) => status >= 200 && status < 400,
   });
 
   fs.writeFileSync(absolutePath, response.data);
@@ -98,6 +114,66 @@ async function downloadAndSaveDocument(orderId, attachment, eventReference) {
     public_url: publicUrl,
     cached: false,
   };
+}
+
+function extractDownloadablesFromOrder(order) {
+  const items = [];
+
+  if (Array.isArray(order?.attachments)) {
+    for (const attachment of order.attachments) {
+      const url = normalizeDownloadUrl(attachment?.url);
+      if (url && !url.startsWith('/uploads/')) {
+        items.push({ title: attachment.title || 'document.pdf', url });
+      }
+    }
+  }
+
+  if (order?.agreement_doc) {
+    items.push({
+      title: 'agreement_doc.pdf',
+      url: normalizeDownloadUrl(order.agreement_doc),
+    });
+  }
+
+  if (order?.agreement_license) {
+    items.push({
+      title: 'agreement_license.pdf',
+      url: normalizeDownloadUrl(order.agreement_license),
+    });
+  }
+
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!item.url || seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
+}
+
+async function saveAllDocumentsFromOrder(orderId, order, eventReference) {
+  const attachments = extractDownloadablesFromOrder(order);
+  if (!attachments.length) return [];
+
+  const saved = [];
+  for (const attachment of attachments) {
+    try {
+      const doc = await downloadAndSaveDocument(orderId, attachment, eventReference);
+      if (doc) saved.push(doc);
+    } catch (err) {
+      console.error(
+        `Failed to download document for order ${orderId}:`,
+        attachment?.url,
+        err.message
+      );
+      saved.push({
+        title: attachment?.title || null,
+        source_url: attachment?.url || null,
+        error: err.message,
+      });
+    }
+  }
+
+  return saved;
 }
 
 async function saveAttachmentsForOrder(orderId, changes, event, eventReference) {
@@ -181,7 +257,9 @@ async function getOrderDocuments(orderId) {
 
 module.exports = {
   getNewAttachments,
+  extractDownloadablesFromOrder,
   saveAttachmentsForOrder,
+  saveAllDocumentsFromOrder,
   mergeLocalAttachments,
   getOrderDocuments,
 };

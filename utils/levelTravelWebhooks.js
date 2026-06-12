@@ -1,8 +1,11 @@
+require('dotenv').config();
 const db = require('../db');
 const {
-  saveAttachmentsForOrder,
-  mergeLocalAttachments,
-} = require('./orderDocuments');
+  resolveAuthToken,
+  syncOrderFromClient,
+  getNewStateFromChanges,
+  shouldDownloadDocuments,
+} = require('./levelTravelClientOrder');
 const { logCallback, logCallbackError } = require('./callbackLogger');
 
 const LOG_NOTIFY = 'LT_NOTIFY';
@@ -12,15 +15,36 @@ const PARTNER_API_KEY =
   process.env.PARTNER_API_KEY || '589e52d73074435f9fc8202b7ec80673';
 
 function verifyPartnerApiKey(req, res, next) {
-  const key = req.headers['partner-api-key'];
-  if (!key || key !== PARTNER_API_KEY) {
-    logCallbackError(LOG_NOTIFY, 'AUTH', 'Rejected — invalid Partner-Api-Key', {
+  const key = String(req.headers['partner-api-key'] || '').trim();
+  const expected = String(PARTNER_API_KEY || '').trim();
+
+  if (!key || key !== expected) {
+    logCallbackError(LOG_NOTIFY, 'AUTH', 'Rejected — invalid Partner-Api-Key (nothing saved)', {
       path: req.path,
       has_key: Boolean(key),
+      key_length: key.length,
+      expected_length: expected.length,
+      order_id: req.body?.order_id,
+      event: req.body?.event,
     });
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
   next();
+}
+
+function logLtRequest(channel) {
+  return (req, res, next) => {
+    logCallback(channel, 'HTTP_IN', 'Raw request received', {
+      ip: req.ip,
+      method: req.method,
+      path: req.path,
+      has_partner_key: Boolean(req.headers['partner-api-key']),
+      order_id: req.body?.order_id,
+      event: req.body?.event,
+      event_reference: req.body?.event_reference || req.body?.request_reference,
+    });
+    next();
+  };
 }
 
 async function isDuplicateReference(reference) {
@@ -41,7 +65,7 @@ async function logEvent({
   changes,
   payload,
 }) {
-  await db.query(
+  const [result] = await db.query(
     `INSERT INTO lt_order_events
       (order_id, reference, reference_type, event, event_timestamp, message, changes, payload)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -56,6 +80,7 @@ async function logEvent({
       JSON.stringify(payload),
     ]
   );
+  return result.insertId;
 }
 
 function applyChangesToPackage(pkg, changes, event) {
@@ -133,6 +158,138 @@ async function findOrderByLtId(orderId) {
   return rows[0] || null;
 }
 
+async function updateOrderFromNotify(orderId, orderRow, eventReference, event, changes) {
+  const {
+    saveAttachmentsForOrder,
+    saveAllDocumentsFromOrder,
+    mergeLocalAttachments,
+    extractDownloadablesFromOrder,
+  } = require('./orderDocuments');
+
+  let pkg = {};
+  try {
+    pkg = JSON.parse(orderRow.package || '{}');
+  } catch {
+    pkg = {};
+  }
+
+  let savedDocuments = [];
+  let fetchError = null;
+
+  // LT "documents" event includes PDF URLs in changes.attachments — no client auth needed
+  if (event === 'documents' || changes?.attachments) {
+    const fromCallback = await saveAttachmentsForOrder(
+      orderId,
+      changes,
+      event,
+      eventReference
+    );
+    savedDocuments.push(...fromCallback);
+
+    if (fromCallback.length) {
+      pkg = mergeLocalAttachments(pkg, fromCallback);
+      logCallback(LOG_NOTIFY, 'DOCS', 'Saved PDFs from callback attachments', {
+        order_id: orderId,
+        saved: fromCallback.filter((d) => d.public_url && !d.error).length,
+        errors: fromCallback.filter((d) => d.error).length,
+      });
+    }
+  }
+
+  pkg = applyChangesToPackage(pkg, changes, event);
+  const newState = getNewStateFromChanges(changes) || pkg.state || null;
+  if (newState) pkg.state = newState;
+
+  const needDocs = shouldDownloadDocuments(event, changes, pkg);
+  const authToken = resolveAuthToken(orderRow);
+
+  // Fetch GET /client/orders/:id and save full order into orders.package
+  if (authToken) {
+    try {
+      const syncResult = await syncOrderFromClient(orderId, authToken, {
+        eventReference,
+        downloadDocs: needDocs,
+        event,
+        changes,
+      });
+      return {
+        order_state: syncResult.order_state || newState,
+        saved_documents: [
+          ...savedDocuments,
+          ...(syncResult.saved_documents || []),
+        ],
+        lt_fetched: true,
+        package_updated: syncResult.package_updated,
+        fetch_error: null,
+        attachments_count: syncResult.attachments_count,
+      };
+    } catch (err) {
+      fetchError = err.response?.data || err.message;
+      logCallbackError(LOG_NOTIFY, 'SYNC', 'LT client fetch failed — trying package URLs', {
+        order_id: orderId,
+        error: fetchError,
+      });
+    }
+  }
+
+  if (needDocs) {
+    // No auth or LT fetch failed — download from URLs in package / callback
+    const savedOk = () =>
+      savedDocuments.filter((d) => d.public_url && !d.error).length;
+
+    const inPackage = extractDownloadablesFromOrder(pkg);
+    if (inPackage.length && savedOk() === 0) {
+      const fromPackage = await saveAllDocumentsFromOrder(
+        orderId,
+        pkg,
+        eventReference
+      );
+      savedDocuments.push(...fromPackage);
+      if (fromPackage.length) {
+        pkg = mergeLocalAttachments(pkg, fromPackage);
+        logCallback(LOG_NOTIFY, 'DOCS', 'Saved PDFs from package URLs', {
+          order_id: orderId,
+          saved: fromPackage.filter((d) => d.public_url && !d.error).length,
+          errors: fromPackage.filter((d) => d.error).length,
+        });
+      }
+    }
+
+    if (savedOk() === 0 && !authToken) {
+      fetchError = 'no_auth_token';
+      logCallbackError(
+        LOG_NOTIFY,
+        'SYNC',
+        'Cannot fetch attachments — missing auth_token',
+        {
+          order_id: orderId,
+          event,
+          new_state: newState,
+          hint: 'Pass auth_token in create-package or set LT_CLIENT_AUTH_TOKEN in .env',
+        }
+      );
+    }
+  }
+
+  await db.query(
+    'UPDATE orders SET package = ?, order_state = COALESCE(?, order_state) WHERE order_id = ?',
+    [JSON.stringify(pkg), newState, orderId]
+  );
+
+  return {
+    order_state: newState,
+    saved_documents: savedDocuments,
+    lt_fetched: false,
+    fetch_error: fetchError,
+    docs_attempted: needDocs,
+  };
+}
+
+function isDocumentsSentEvent(changes) {
+  const newState = getNewStateFromChanges(changes);
+  return newState === 'documents_sent';
+}
+
 async function processOrderNotify(body) {
   const {
     order_id: rawOrderId,
@@ -163,85 +320,101 @@ async function processOrderNotify(body) {
     throw err;
   }
 
-  if (await isDuplicateReference(event_reference)) {
-    logCallback(LOG_NOTIFY, 'SKIP', 'Duplicate event — already processed', {
+  const isDuplicate = await isDuplicateReference(event_reference);
+  const docsSent = isDocumentsSentEvent(changes);
+  let retryDocsOnly = false;
+
+  if (isDuplicate) {
+    if (!docsSent) {
+      logCallback(LOG_NOTIFY, 'SKIP', 'Duplicate event — already processed', {
+        order_id,
+        event_reference,
+      });
+      return { success: true, duplicate: true };
+    }
+
+    retryDocsOnly = true;
+    logCallback(LOG_NOTIFY, 'RETRY', 'Duplicate documents_sent — refresh package + PDFs', {
       order_id,
       event_reference,
     });
-    return { success: true, duplicate: true };
   }
 
   const order = await findOrderByLtId(order_id);
   let newState = null;
   let savedDocuments = [];
+  let orderUpdateError = null;
+  let orderUpdate = null;
 
   if (order) {
-    let pkg = {};
     try {
-      pkg = JSON.parse(order.package || '{}');
-    } catch {
-      pkg = {};
-    }
-
-    if (event === 'documents' || changes?.attachments) {
-      logCallback(LOG_NOTIFY, 'DOCS', 'Downloading attachments', {
+      orderUpdate = await updateOrderFromNotify(
         order_id,
+        order,
+        event_reference,
         event,
-      });
-      savedDocuments = await saveAttachmentsForOrder(
-        order_id,
-        changes,
-        event,
-        event_reference
+        changes
       );
-      logCallback(LOG_NOTIFY, 'DOCS', 'Attachments saved', {
+      newState = orderUpdate.order_state;
+      savedDocuments = orderUpdate.saved_documents || [];
+      logCallback(LOG_NOTIFY, 'DB', 'Order updated', {
         order_id,
-        count: savedDocuments.length,
-        files: savedDocuments.map((d) => d.public_url || d.error),
+        order_state: newState,
+        event,
+        ...orderUpdate,
+      });
+    } catch (err) {
+      orderUpdateError = err.message;
+      logCallbackError(LOG_NOTIFY, 'DB', 'Order update failed — will still save event', {
+        order_id,
+        error: err.message,
       });
     }
-
-    pkg = applyChangesToPackage(pkg, changes, event);
-
-    if (savedDocuments.length) {
-      pkg = mergeLocalAttachments(pkg, savedDocuments);
-    }
-
-    if (Array.isArray(changes?.state) && changes.state.length >= 2) {
-      newState = changes.state[1];
-    } else if (pkg.state) {
-      newState = pkg.state;
-    }
-
-    await db.query(
-      'UPDATE orders SET package = ?, order_state = COALESCE(?, order_state) WHERE order_id = ?',
-      [JSON.stringify(pkg), newState, order_id]
-    );
-    logCallback(LOG_NOTIFY, 'DB', 'Order updated', {
-      order_id,
-      order_state: newState,
-      event,
-    });
   } else {
-    logCallback(LOG_NOTIFY, 'DB', 'Order NOT found — event logged only', { order_id });
+    logCallback(LOG_NOTIFY, 'DB', 'Order NOT found — saving event only', { order_id });
   }
 
-  await logEvent({
-    order_id,
-    reference: event_reference,
-    reference_type: 'event',
-    event,
-    event_timestamp,
-    message,
-    changes,
-    payload: body,
-  });
+  let eventLogId = null;
+  if (!retryDocsOnly) {
+    try {
+      eventLogId = await logEvent({
+        order_id,
+        reference: event_reference,
+        reference_type: 'event',
+        event,
+        event_timestamp,
+        message,
+        changes,
+        payload: body,
+      });
+      logCallback(LOG_NOTIFY, 'SAVED', 'Event saved to lt_order_events', {
+        id: eventLogId,
+        order_id,
+        event,
+        event_reference,
+      });
+    } catch (err) {
+      logCallbackError(LOG_NOTIFY, 'ERROR', 'FAILED to save lt_order_events', {
+        order_id,
+        event_reference,
+        error: err.message,
+      });
+      const dbErr = new Error(`Failed to save callback: ${err.message}`);
+      dbErr.status = 500;
+      throw dbErr;
+    }
+  }
 
   const result = {
     success: true,
+    duplicate: isDuplicate,
+    docs_retry: retryDocsOnly,
     order_found: Boolean(order),
     order_state: newState,
     saved_documents: savedDocuments,
+    order_update: orderUpdate,
+    event_log_id: eventLogId,
+    order_update_error: orderUpdateError,
   };
   logCallback(LOG_NOTIFY, 'OUT', 'Notify processed', result);
   return result;
@@ -287,21 +460,39 @@ async function processOrderRefund(body) {
     logCallback(LOG_REFUND, 'DB', 'Order NOT found — refund logged only', { order_id });
   }
 
-  await logEvent({
-    order_id,
-    reference: request_reference,
-    reference_type: 'refund',
-    event: 'order_refund',
-    event_timestamp: timestamp,
-    message: `Refund amount: ${amount}`,
-    changes: { amount },
-    payload: body,
-  });
+  let eventLogId = null;
+  try {
+    eventLogId = await logEvent({
+      order_id,
+      reference: request_reference,
+      reference_type: 'refund',
+      event: 'order_refund',
+      event_timestamp: timestamp,
+      message: `Refund amount: ${amount}`,
+      changes: { amount },
+      payload: body,
+    });
+    logCallback(LOG_REFUND, 'SAVED', 'Refund saved to lt_order_events', {
+      id: eventLogId,
+      order_id,
+      request_reference,
+    });
+  } catch (err) {
+    logCallbackError(LOG_REFUND, 'ERROR', 'FAILED to save lt_order_events', {
+      order_id,
+      request_reference,
+      error: err.message,
+    });
+    const dbErr = new Error(`Failed to save refund callback: ${err.message}`);
+    dbErr.status = 500;
+    throw dbErr;
+  }
 
   const result = {
     success: true,
     order_found: Boolean(order),
     refund_amount: amount,
+    event_log_id: eventLogId,
   };
   logCallback(LOG_REFUND, 'OUT', 'Refund processed', result);
   return result;
@@ -309,6 +500,7 @@ async function processOrderRefund(body) {
 
 module.exports = {
   verifyPartnerApiKey,
+  logLtRequest,
   processOrderNotify,
   processOrderRefund,
 };

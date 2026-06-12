@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const https = require('https');
 const axios = require('axios');
@@ -34,6 +35,12 @@ const HEADERS_3_8 = {
     Accept: 'application/vnd.leveltravel.v3.8',
     Authorization: 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
     'Content-Type': 'application/json'
+};
+const LT_API_TOKEN = process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
+const HEADERS_3_4 = {
+    Accept: 'application/vnd.leveltravel.v3.4',
+    Authorization: `Token token="${LT_API_TOKEN}"`,
+    'Content-Type': 'application/json',
 };
 
 app.get('/references/departures', async (req, res) => {
@@ -508,12 +515,24 @@ app.post('/create-package', async (req, res) => {
         );
         if(response.data.success){
             let order_id = response.data.order.id;
-            let package = JSON.stringify(response.data.order);
+            let orderData = { ...response.data.order };
+            const authToken = String(payload.auth_token || '').trim() || null;
+            if (authToken) {
+                orderData._lt_auth_token = authToken;
+            }
+            let package = JSON.stringify(orderData);
             let user_id = payload.user_id;
-            await db.query(
-                'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
-                [order_id, package, user_id]
-            );
+            try {
+                await db.query(
+                    'INSERT INTO orders (order_id, package, user_id, lt_auth_token) VALUES (?, ?, ?, ?)',
+                    [order_id, package, user_id, authToken]
+                );
+            } catch (dbErr) {
+                await db.query(
+                    'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
+                    [order_id, package, user_id]
+                );
+            }
         }
 
         res.json(response.data);
@@ -549,15 +568,130 @@ app.post('/validate-tourists', async (req, res) => {
 });
 
 
+// Level Travel client orders (proxy to api.level.travel)
+app.get('/client/orders', async (req, res) => {
+    try {
+        const src = { ...req.query, ...req.body };
+        const payload = {
+            auth_token: src.auth_token,
+            page_number: String(src.page_number ?? '0'),
+            page_limit: String(src.page_limit ?? '10'),
+        };
+
+        if (!payload.auth_token) {
+            return res.status(400).json({ error: 'Missing auth_token' });
+        }
+
+        const response = await axios({
+            method: 'GET',
+            url: `${BASE_URL}/client/orders`,
+            headers: HEADERS_3_4,
+            data: payload,
+        });
+
+        return res.status(response.status).json(response.data);
+    } catch (error) {
+        console.error('LT client orders list error:', error.response?.data || error.message);
+        if (error.response) {
+            return res.status(error.response.status).json(error.response.data);
+        }
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/client/orders/:order_id', async (req, res) => {
+    try {
+        const src = { ...req.query, ...req.body };
+        const auth_token = src.auth_token;
+        const saveToDb = src.save !== '0' && src.save !== 'false';
+
+        if (!auth_token) {
+            return res.status(400).json({ error: 'Missing auth_token' });
+        }
+
+        const orderId = Number(req.params.order_id);
+        const {
+            fetchClientOrderRaw,
+            buildPackageFromClientOrder,
+            saveOrderPackageToDb,
+            loadExistingPackage,
+        } = require('./utils/levelTravelClientOrder');
+
+        const { raw, order } = await fetchClientOrderRaw(req.params.order_id, auth_token);
+
+        let package_updated = false;
+        if (saveToDb && Number.isFinite(orderId)) {
+            const existingPkg = await loadExistingPackage(orderId);
+            const pkg = buildPackageFromClientOrder(
+                order,
+                raw,
+                auth_token,
+                [],
+                existingPkg
+            );
+            package_updated = await saveOrderPackageToDb(
+                orderId,
+                pkg,
+                auth_token,
+                order.state
+            );
+        }
+
+        return res.status(200).json({
+            ...raw,
+            package_updated,
+        });
+    } catch (error) {
+        console.error('LT client order by id error:', error.response?.data || error.message);
+        if (error.response) {
+            return res.status(error.response.status).json(error.response.data);
+        }
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// Fetch LT order + save package to DB + download all PDFs
+app.post('/client/orders/:order_id/sync', async (req, res) => {
+    try {
+        const orderId = Number(req.params.order_id);
+        const auth_token =
+            req.body?.auth_token || req.query?.auth_token || process.env.LT_CLIENT_AUTH_TOKEN;
+
+        if (!Number.isFinite(orderId)) {
+            return res.status(400).json({ error: 'Invalid order_id' });
+        }
+        if (!auth_token) {
+            return res.status(400).json({ error: 'Missing auth_token' });
+        }
+
+        const { syncOrderFromClient } = require('./utils/levelTravelClientOrder');
+        const result = await syncOrderFromClient(orderId, auth_token, {
+            downloadDocs: true,
+            eventReference: `manual-sync-${Date.now()}`,
+        });
+
+        return res.status(200).json(result);
+    } catch (error) {
+        console.error('LT client order sync error:', error.response?.data || error.message);
+        if (error.response) {
+            return res.status(error.response.status).json(error.response.data);
+        }
+        return res.status(500).json({ error: error.message });
+    }
+});
+
 app.get('/orders', async (req, res) => {
     try {
         const [orders] = await db.query('SELECT * FROM orders WHERE order_id = ?', [req.query.order_id]);
-        let order =JSON.parse(orders[0]['package']);
+        if (!orders[0]) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        let order = JSON.parse(orders[0]['package']);
 
-        res.json({...orders[0],package:order});
+        res.json({ ...orders[0], package: order });
     } catch (error) {
-        console.error('Error departures:', error.message);
-        res.status(500).json({ error: 'Failed departures' });
+        console.error('Error orders:', error.message);
+        res.status(500).json({ error: 'Failed to get order' });
     }
 });
 
@@ -928,6 +1062,7 @@ function generateSignatureCancelled(order_id, status, partner_api_key) {
 
 const {
     verifyPartnerApiKey,
+    logLtRequest,
     processOrderNotify,
     processOrderRefund,
 } = require('./utils/levelTravelWebhooks');
@@ -950,8 +1085,33 @@ app.post('/vtb/callback', async (req, res) => {
     }
 });
 
+// Partner → Level Travel: notify order paid
+app.post('/level_travel/notify-paid', async (req, res) => {
+    try {
+        const { order_id, amount } = req.body;
+        if (!order_id) {
+            return res.status(400).json({ success: false, error: "Missing order_id" });
+        }
+
+        const { notifyLevelTravelOrderPaid } = require('./utils/levelTravelPayment');
+        const result = await notifyLevelTravelOrderPaid({ order_id, amount });
+        return res.status(200).json(result);
+    } catch (error) {
+        logCallbackError('LT_PAY_NOTIFY', 'HTTP_ERROR', error.message, {
+            order_id: req.body?.order_id,
+            lt_error: error.lt_error,
+        });
+        const status = error.status || 500;
+        return res.status(status).json({
+            success: false,
+            error: error.message,
+            lt_error: error.lt_error || null,
+        });
+    }
+});
+
 // Level Travel → partner: order change notifications
-app.post('/tours/level_travel/notify', verifyPartnerApiKey, async (req, res) => {
+app.post('/tours/level_travel/notify', logLtRequest('LT_NOTIFY'), verifyPartnerApiKey, async (req, res) => {
     try {
         const result = await processOrderNotify(req.body);
         return res.status(200).json(result);
@@ -966,7 +1126,7 @@ app.post('/tours/level_travel/notify', verifyPartnerApiKey, async (req, res) => 
 });
 
 // Level Travel → partner: refund notification
-app.post('/tours/level_travel/order_refund', verifyPartnerApiKey, async (req, res) => {
+app.post('/tours/level_travel/order_refund', logLtRequest('LT_REFUND'), verifyPartnerApiKey, async (req, res) => {
     try {
         const result = await processOrderRefund(req.body);
         return res.status(200).json(result);
@@ -980,6 +1140,22 @@ app.post('/tours/level_travel/order_refund', verifyPartnerApiKey, async (req, re
     }
 });
 
+// Level Travel callback history (saved in lt_order_events)
+app.get('/tours/level_travel/history', verifyPartnerApiKey, async (req, res) => {
+    try {
+        const { getAllLtCallbackHistory } = require('./utils/clientOrders');
+        const data = await getAllLtCallbackHistory({
+            order_id: req.query.order_id,
+            limit: req.query.limit,
+            offset: req.query.offset,
+        });
+        return res.status(200).json(data);
+    } catch (error) {
+        logCallbackError('LT_HISTORY', 'ERROR', error.message);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/admin', faqRoutes);
@@ -990,6 +1166,9 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);
     console.log(`[CALLBACKS] VTB bank:     POST /vtb/callback`);
+    console.log(`[CALLBACKS] To Level Travel: POST /level_travel/notify-paid`);
     console.log(`[CALLBACKS] Level Travel: POST /tours/level_travel/notify`);
     console.log(`[CALLBACKS] Level Travel: POST /tours/level_travel/order_refund`);
+    console.log(`[CALLBACKS] Level Travel: GET  /tours/level_travel/history`);
+    console.log(`[CALLBACKS] PARTNER_API_KEY loaded: ${Boolean(process.env.PARTNER_API_KEY)}`);
 });
