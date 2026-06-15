@@ -164,6 +164,7 @@ async function updateOrderFromNotify(orderId, orderRow, eventReference, event, c
     saveAllDocumentsFromOrder,
     mergeLocalAttachments,
     extractDownloadablesFromOrder,
+    countOrderDocuments,
   } = require('./orderDocuments');
 
   let pkg = {};
@@ -202,13 +203,37 @@ async function updateOrderFromNotify(orderId, orderRow, eventReference, event, c
 
   const needDocs = shouldDownloadDocuments(event, changes, pkg);
   const authToken = resolveAuthToken(orderRow);
+  const isSingleDocEvent = event === 'documents';
+  const isDocsSent = isDocumentsSentEvent(changes);
+  const existingDocCount = needDocs ? await countOrderDocuments(orderId) : 0;
+
+  let downloadDocs = false;
+  if (needDocs) {
+    if (isSingleDocEvent) {
+      // Individual documents event — callback already saved the new file
+      downloadDocs = false;
+    } else if (isDocsSent) {
+      // Bulk download only if nothing saved yet (LT also sends per-document events)
+      downloadDocs = existingDocCount === 0;
+    } else {
+      downloadDocs = true;
+    }
+  }
+
+  logCallback(LOG_NOTIFY, 'DOCS', 'Download plan', {
+    order_id: orderId,
+    event,
+    need_docs: needDocs,
+    download_docs: downloadDocs,
+    existing_doc_count: existingDocCount,
+  });
 
   // Fetch GET /client/orders/:id and save full order into orders.package
   if (authToken) {
     try {
       const syncResult = await syncOrderFromClient(orderId, authToken, {
         eventReference,
-        downloadDocs: needDocs,
+        downloadDocs,
         event,
         changes,
       });
@@ -290,6 +315,11 @@ function isDocumentsSentEvent(changes) {
   return newState === 'documents_sent';
 }
 
+async function countOrderDocuments(orderId) {
+  const { countOrderDocuments: countDocs } = require('./orderDocuments');
+  return countDocs(orderId);
+}
+
 async function processOrderNotify(body) {
   const {
     order_id: rawOrderId,
@@ -333,10 +363,12 @@ async function processOrderNotify(body) {
       return { success: true, duplicate: true };
     }
 
+    const docCount = await countOrderDocuments(order_id);
     retryDocsOnly = true;
-    logCallback(LOG_NOTIFY, 'RETRY', 'Duplicate documents_sent — refresh package + PDFs', {
+    logCallback(LOG_NOTIFY, 'RETRY', 'Duplicate documents_sent — refresh package only', {
       order_id,
       event_reference,
+      existing_docs: docCount,
     });
   }
 

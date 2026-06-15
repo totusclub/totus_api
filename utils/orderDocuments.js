@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const axios = require('axios');
 const db = require('../db');
 
@@ -43,42 +42,140 @@ function getNewAttachments(changes) {
   return next.filter((item) => item?.url && !prevUrls.has(item.url));
 }
 
-async function documentExists(orderId, sourceUrl) {
+function getDocumentKey(title, url) {
+  const sourceUrl = normalizeDownloadUrl(url) || '';
+  const attachmentMatch = sourceUrl.match(/\/attachment\/(\d+)/);
+  if (attachmentMatch) {
+    return `attachment:${attachmentMatch[1]}`;
+  }
+  if (sourceUrl.includes('/agreement.pdf') || sourceUrl.includes('agreement_code=')) {
+    return 'agreement_doc';
+  }
+  if (sourceUrl.includes('license_agreement.pdf')) {
+    return 'agreement_license';
+  }
+  return `title:${sanitizeFilename(title).toLowerCase()}`;
+}
+
+async function documentExistsByUrl(orderId, sourceUrl) {
   const [rows] = await db.query(
-    'SELECT id, file_path, public_url, title FROM order_documents WHERE order_id = ? AND source_url = ? LIMIT 1',
+    'SELECT id, file_path, public_url, title, source_url FROM order_documents WHERE order_id = ? AND source_url = ? LIMIT 1',
     [orderId, sourceUrl]
   );
   return rows[0] || null;
+}
+
+async function documentExistsByTitle(orderId, title) {
+  const normalizedTitle = String(title || '').trim();
+  if (!normalizedTitle) return null;
+
+  const [rows] = await db.query(
+    `SELECT id, file_path, public_url, title, source_url
+     FROM order_documents
+     WHERE order_id = ? AND title = ?
+     ORDER BY id ASC
+     LIMIT 1`,
+    [orderId, normalizedTitle]
+  );
+  return rows[0] || null;
+}
+
+async function findExistingDocument(orderId, attachment) {
+  const sourceUrl = normalizeDownloadUrl(attachment?.url);
+  const title = attachment?.title || 'document.pdf';
+
+  if (sourceUrl) {
+    const byUrl = await documentExistsByUrl(orderId, sourceUrl);
+    if (byUrl) return byUrl;
+  }
+
+  const byTitle = await documentExistsByTitle(orderId, title);
+  if (byTitle) return byTitle;
+
+  return null;
+}
+
+async function countOrderDocuments(orderId) {
+  const [rows] = await db.query(
+    'SELECT COUNT(*) AS cnt FROM order_documents WHERE order_id = ?',
+    [orderId]
+  );
+  return Number(rows[0]?.cnt || 0);
+}
+
+async function filterNewDownloadables(orderId, items) {
+  const seenKeys = new Set();
+  const filtered = [];
+
+  for (const item of items) {
+    const key = getDocumentKey(item.title, item.url);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const existing = await findExistingDocument(orderId, item);
+    if (existing) continue;
+
+    filtered.push(item);
+  }
+
+  return filtered;
 }
 
 async function downloadAndSaveDocument(orderId, attachment, eventReference) {
   const sourceUrl = normalizeDownloadUrl(attachment?.url);
   if (!sourceUrl) return null;
 
-  const existing = await documentExists(orderId, sourceUrl);
+  const title = attachment.title || 'document.pdf';
+  const existing = await findExistingDocument(orderId, attachment);
   if (existing) {
     return {
       id: existing.id,
       title: existing.title,
-      source_url: sourceUrl,
+      source_url: existing.source_url,
       file_path: existing.file_path,
       public_url: existing.public_url,
       cached: true,
+      skipped_duplicate: true,
     };
   }
 
   const orderDir = path.join(ORDERS_UPLOAD_DIR, String(orderId));
   fs.mkdirSync(orderDir, { recursive: true });
 
-  const title = attachment.title || 'document.pdf';
   let filename = sanitizeFilename(title);
   const filePath = path.join(orderDir, filename);
 
   if (fs.existsSync(filePath)) {
-    const stamp = crypto.randomBytes(4).toString('hex');
-    const ext = path.extname(filename);
-    const stem = path.basename(filename, ext);
-    filename = `${stem}_${stamp}${ext}`;
+    const onDisk = await documentExistsByTitle(orderId, title);
+    if (onDisk) {
+      return {
+        id: onDisk.id,
+        title: onDisk.title,
+        source_url: onDisk.source_url,
+        file_path: onDisk.file_path,
+        public_url: onDisk.public_url,
+        cached: true,
+        skipped_duplicate: true,
+      };
+    }
+
+    const relativePath = path.posix.join('uploads', 'orders', String(orderId), filename);
+    const publicUrl = `/uploads/orders/${orderId}/${filename}`;
+    const [result] = await db.query(
+      `INSERT INTO order_documents
+        (order_id, title, source_url, file_path, public_url, event_reference)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [orderId, title, sourceUrl, relativePath, publicUrl, eventReference || null]
+    );
+    return {
+      id: result.insertId,
+      title,
+      source_url: sourceUrl,
+      file_path: relativePath,
+      public_url: publicUrl,
+      cached: true,
+      skipped_duplicate: true,
+    };
   }
 
   const absolutePath = path.join(orderDir, filename);
@@ -144,14 +241,18 @@ function extractDownloadablesFromOrder(order) {
 
   const seen = new Set();
   return items.filter((item) => {
-    if (!item.url || seen.has(item.url)) return false;
-    seen.add(item.url);
+    const key = getDocumentKey(item.title, item.url);
+    if (!item.url || seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
 
 async function saveAllDocumentsFromOrder(orderId, order, eventReference) {
-  const attachments = extractDownloadablesFromOrder(order);
+  const attachments = await filterNewDownloadables(
+    orderId,
+    extractDownloadablesFromOrder(order)
+  );
   if (!attachments.length) return [];
 
   const saved = [];
@@ -177,15 +278,26 @@ async function saveAllDocumentsFromOrder(orderId, order, eventReference) {
 }
 
 async function saveAttachmentsForOrder(orderId, changes, event, eventReference) {
-  const attachments =
-    event === 'documents' ? getNewAttachments(changes) : getNewAttachments(changes);
+  const attachments = getNewAttachments(changes);
 
   if (!attachments.length) {
     return [];
   }
 
+  const toDownload = await filterNewDownloadables(
+    orderId,
+    attachments.map((a) => ({
+      title: a.title || 'document.pdf',
+      url: a.url,
+    }))
+  );
+
+  if (!toDownload.length) {
+    return [];
+  }
+
   const saved = [];
-  for (const attachment of attachments) {
+  for (const attachment of toDownload) {
     try {
       const doc = await downloadAndSaveDocument(orderId, attachment, eventReference);
       if (doc) saved.push(doc);
@@ -257,9 +369,13 @@ async function getOrderDocuments(orderId) {
 
 module.exports = {
   getNewAttachments,
+  getDocumentKey,
   extractDownloadablesFromOrder,
   saveAttachmentsForOrder,
   saveAllDocumentsFromOrder,
   mergeLocalAttachments,
   getOrderDocuments,
+  countOrderDocuments,
+  findExistingDocument,
+  filterNewDownloadables,
 };
