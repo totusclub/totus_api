@@ -686,9 +686,15 @@ app.get('/orders', async (req, res) => {
         if (!orders[0]) {
             return res.status(404).json({ error: 'Order not found' });
         }
-        let order = JSON.parse(orders[0]['package']);
 
-        res.json({ ...orders[0], package: order });
+        let parsedPackage;
+        try {
+            parsedPackage = JSON.parse(orders[0].package);
+        } catch {
+            parsedPackage = {};
+        }
+
+        res.json({ ...orders[0], package: parsedPackage });
     } catch (error) {
         console.error('Error orders:', error.message);
         res.status(500).json({ error: 'Failed to get order' });
