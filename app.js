@@ -391,7 +391,9 @@ app.post('/vtb/create-order', async (req, res) => {
             orderName,
             expire,
             amount,
-            returnUrl
+            returnUrl,
+            paymentPurpose,
+            purposeText,
         } = req.body;
         const data = await generationBankToken();
 
@@ -410,13 +412,36 @@ app.post('/vtb/create-order', async (req, res) => {
             "Content-Type": "application/json",
         };
 
-        const requestId = String(orderId);
+        const cleanOrderId = String(orderId).replace(/^ORDER/i, "");
+        let orderPackage = null;
+        if (cleanOrderId) {
+            try {
+                const [rows] = await db.query(
+                    "SELECT package FROM orders WHERE order_id = ? LIMIT 1",
+                    [cleanOrderId]
+                );
+                if (rows[0]?.package) {
+                    orderPackage = JSON.parse(rows[0].package);
+                }
+            } catch (dbErr) {
+                console.error("VTB create-order package lookup:", dbErr.message);
+            }
+        }
+
+        const { buildVtbPaymentPurpose } = require("./utils/vtbPaymentPurpose");
+        const { purpose, subscriptionPurpose } = buildVtbPaymentPurpose({
+            orderId,
+            orderName,
+            paymentPurpose: paymentPurpose || purposeText,
+            package: orderPackage,
+        });
+
         const vtbPayload = {
             amount: +amount.value,
             currency: "RUB",
             qrTtl: "15",
-            purpose: requestId,
-            subscriptionPurpose:'Назначение платежа',
+            purpose,
+            subscriptionPurpose,
             redirectUrl: 'https://totus.club',
         };
         // requestId,
@@ -431,7 +456,6 @@ app.post('/vtb/create-order', async (req, res) => {
         const qrcId = qrData.qrcId || null;
         const sbpPayload = qrData.payload || null;
 
-        const cleanOrderId = String(orderId).replace(/^ORDER/i, "");
         if (qrcId && cleanOrderId) {
             try {
                 await db.query(
