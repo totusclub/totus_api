@@ -1,13 +1,13 @@
-const SBP_PURPOSE_MAX = 210;
+const SBP_PURPOSE_MAX = 140;
 
 function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function truncatePurpose(text, max = SBP_PURPOSE_MAX) {
+function truncateAt(text, max = SBP_PURPOSE_MAX) {
   const normalized = normalizeWhitespace(text);
   if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, max - 1)}…`;
+  return normalized.slice(0, max);
 }
 
 function formatRuDate(value) {
@@ -78,19 +78,29 @@ function extractOrderDetails(pkg) {
 function buildVtbPaymentPurpose({ orderId, orderName, paymentPurpose, package: pkg }) {
   const idStr = String(orderId || '').replace(/^ORDER/i, '');
   const orderRef = idStr ? `ORDER${idStr}` : '';
-  const details =
+  const suffix = orderRef ? ` ${orderRef}` : '';
+  const maxBody = Math.max(0, SBP_PURPOSE_MAX - suffix.length);
+
+  const rawDetails =
     pickFirstString([paymentPurpose, extractOrderDetails(pkg), orderName]) ||
-    (idStr ? `Заказ №${idStr}` : 'Оплата тура Totus Club');
+    (idStr ? `Заказ №${idStr}` : 'Оплата тура');
 
-  let text = details;
-  if (!/totus/i.test(text)) {
-    text = `Оплата тура Totus Club: ${details}`;
-  }
-  if (orderRef && !text.includes(orderRef)) {
-    text = `${text}. ${orderRef}`;
+  const prefix = 'Totus Club: ';
+  let body = rawDetails;
+
+  if (!/totus/i.test(body)) {
+    if (prefix.length + body.length <= maxBody) {
+      body = `${prefix}${body}`;
+    } else if (maxBody > prefix.length) {
+      body = `${prefix}${truncateAt(body, maxBody - prefix.length)}`;
+    } else {
+      body = truncateAt(body, maxBody);
+    }
+  } else {
+    body = truncateAt(body, maxBody);
   }
 
-  const purpose = truncatePurpose(text);
+  const purpose = truncateAt(`${body}${suffix}`, SBP_PURPOSE_MAX);
   return {
     purpose,
     subscriptionPurpose: purpose,
