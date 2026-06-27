@@ -440,7 +440,7 @@ app.post('/vtb/create-order', async (req, res) => {
             amount: +amount.value,
             currency: "RUB",
             qrTtl: "15",
-            purpose,
+            purpose:subscriptionPurpose,
             subscriptionPurpose,
             redirectUrl: 'https://totus.club',
         };
@@ -1191,6 +1191,7 @@ app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/admin', faqRoutes);
 app.use('/api/admin', popularRoutes);
 app.use('/api/content', contentRoutes);
+app.use('/api/pages', require('./routes/publicPages.routes'));
 app.use('/api/admin/pages', pagesRoutes);
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

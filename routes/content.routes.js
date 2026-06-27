@@ -25,7 +25,8 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Route for CKEditor upload
+// Route for CKEditor / admin editor upload
 router.post('/upload', upload.single('upload'), uploadImage);
+router.post('/upload-image', upload.single('file'), uploadImage);
 
 module.exports = router;

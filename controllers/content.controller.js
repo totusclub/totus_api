@@ -1,5 +1,12 @@
-
 const path = require('path');
+
+function getPublicApiBase(req) {
+    return (
+        process.env.API_PUBLIC_URL ||
+        process.env.PUBLIC_API_URL ||
+        `${req.protocol}://${req.get('host')}`
+    );
+}
 
 exports.uploadImage = (req, res) => {
     const file = req.file;
@@ -7,11 +14,10 @@ exports.uploadImage = (req, res) => {
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const imageUrl = `http://localhost:3001/upload/content/${file.filename}`;
+    const imageUrl = `${getPublicApiBase(req)}/upload/content/${file.filename}`;
 
-    // CKEditor expects this structure:
     res.status(201).json({
         uploaded: true,
-        url: imageUrl
+        url: imageUrl,
     });
 };
