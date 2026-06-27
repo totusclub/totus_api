@@ -613,7 +613,9 @@ app.get('/client/orders', async (req, res) => {
             data: payload,
         });
 
-        return res.status(response.status).json(response.data);
+        const { sanitizeLtApiPayloadForClient } = require('./utils/orderDocuments');
+        const sanitized = await sanitizeLtApiPayloadForClient(null, response.data);
+        return res.status(response.status).json(sanitized);
     } catch (error) {
         console.error('LT client orders list error:', error.response?.data || error.message);
         if (error.response) {
@@ -661,10 +663,13 @@ app.get('/client/orders/:order_id', async (req, res) => {
             );
         }
 
-        return res.status(200).json({
+        const { sanitizeLtApiPayloadForClient } = require('./utils/orderDocuments');
+        const sanitized = await sanitizeLtApiPayloadForClient(orderId, {
             ...raw,
             package_updated,
         });
+
+        return res.status(200).json(sanitized);
     } catch (error) {
         console.error('LT client order by id error:', error.response?.data || error.message);
         if (error.response) {
@@ -689,12 +694,20 @@ app.post('/client/orders/:order_id/sync', async (req, res) => {
         }
 
         const { syncOrderFromClient } = require('./utils/levelTravelClientOrder');
+        const { sanitizeLtApiPayloadForClient } = require('./utils/orderDocuments');
         const result = await syncOrderFromClient(orderId, auth_token, {
             downloadDocs: true,
             eventReference: `manual-sync-${Date.now()}`,
         });
 
-        return res.status(200).json(result);
+        const sanitized = await sanitizeLtApiPayloadForClient(orderId, {
+            ...result,
+            lt_response: result.lt_response
+                ? await sanitizeLtApiPayloadForClient(orderId, result.lt_response)
+                : result.lt_response,
+        });
+
+        return res.status(200).json(sanitized);
     } catch (error) {
         console.error('LT client order sync error:', error.response?.data || error.message);
         if (error.response) {
@@ -711,14 +724,9 @@ app.get('/orders', async (req, res) => {
             return res.status(404).json({ error: 'Order not found' });
         }
 
-        let parsedPackage;
-        try {
-            parsedPackage = JSON.parse(orders[0].package);
-        } catch {
-            parsedPackage = {};
-        }
-
-        res.json({ ...orders[0], package: parsedPackage });
+        const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const order = await prepareOrderRowForClient(orders[0]);
+        res.json(order);
     } catch (error) {
         console.error('Error orders:', error.message);
         res.status(500).json({ error: 'Failed to get order' });
@@ -743,20 +751,10 @@ app.get('/orders/documents', async (req, res) => {
 app.get('/user/orders', async (req, res) => {
     try {
         const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [req.query.user_id]);
-        const parsedOrders = orders.map(order => {
-            let parsedPackage;
-
-            try {
-                parsedPackage = JSON.parse(order.package);
-            } catch (e) {
-                parsedPackage = {}; // or null / order.package if invalid JSON
-            }
-
-            return {
-                ...order,
-                package: parsedPackage
-            };
-        });
+        const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const parsedOrders = await Promise.all(
+            orders.map((order) => prepareOrderRowForClient(order))
+        );
 
         res.json(parsedOrders);
     } catch (error) {

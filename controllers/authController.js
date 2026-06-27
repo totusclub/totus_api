@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
+const { prepareOrderRowForClient } = require('../utils/orderDocuments');
 
 
 exports.signInTeacher = async (req, res) => {
@@ -120,20 +121,9 @@ exports.orders = async (req, res) => {
             return res.status(404).json({ message: 'admin not found' });
         }
 
-        const parsedOrders = orders.map(order => {
-            let parsedPackage;
-
-            try {
-                parsedPackage = JSON.parse(order.package);
-            } catch (e) {
-                parsedPackage = {}; // or null / order.package if invalid JSON
-            }
-
-            return {
-                ...order,
-                package: parsedPackage
-            };
-        });
+        const parsedOrders = await Promise.all(
+            orders.map((order) => prepareOrderRowForClient(order))
+        );
         res.json(parsedOrders);
     } catch (error) {
         console.error(error);
@@ -160,20 +150,9 @@ exports.ordersById = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        const parsedOrders = orders.map(order => {
-            let parsedPackage;
-
-            try {
-                parsedPackage = JSON.parse(order.package);
-            } catch (e) {
-                parsedPackage = {};
-            }
-
-            return {
-                ...order,
-                package: parsedPackage
-            };
-        });
+        const parsedOrders = await Promise.all(
+            orders.map((order) => prepareOrderRowForClient(order))
+        );
 
         res.json(parsedOrders);
     } catch (error) {
@@ -205,21 +184,9 @@ exports.ordersByUsers = async (req, res) => {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        const parsedOrders = orders.map(order => {
-            let parsedPackage;
-
-            try {
-                parsedPackage = JSON.parse(order.package);
-            } catch (e) {
-                parsedPackage = {};
-            }
-
-            return {
-                ...order,
-                package: parsedPackage,
-
-            };
-        });
+        const parsedOrders = await Promise.all(
+            orders.map((order) => prepareOrderRowForClient(order))
+        );
 
         res.json({orders:parsedOrders,users:users});
     } catch (error) {
@@ -239,18 +206,9 @@ exports.overview = async (req, res) => {
              ORDER BY c_date DESC`
         );
 
-        const parsedOrders = orders.map(order => {
-            let parsedPackage;
-            try {
-                parsedPackage = JSON.parse(order.package);
-            } catch (e) {
-                parsedPackage = {};
-            }
-            return {
-                ...order,
-                package: parsedPackage,
-            };
-        });
+        const parsedOrders = await Promise.all(
+            orders.map((order) => prepareOrderRowForClient(order))
+        );
 
         const [[{ totalUsers }]] = await pool.query(
             'SELECT COUNT(*) AS totalUsers FROM users'

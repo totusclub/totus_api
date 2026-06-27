@@ -318,6 +318,186 @@ async function saveAttachmentsForOrder(orderId, changes, event, eventReference) 
   return saved;
 }
 
+function isLocalDocumentUrl(url) {
+  if (!url) return false;
+  return String(url).trim().startsWith('/uploads/');
+}
+
+function isExternalDocumentUrl(url) {
+  if (!url || isLocalDocumentUrl(url)) return false;
+  const value = String(url).trim().toLowerCase();
+  return /^https?:\/\//i.test(value) || value.includes('level.travel');
+}
+
+function buildDocumentLookup(documents) {
+  const bySourceUrl = new Map();
+  const byKey = new Map();
+  const byTitle = new Map();
+
+  for (const doc of documents) {
+    const source = normalizeDownloadUrl(doc.source_url);
+    if (source) bySourceUrl.set(source, doc);
+
+    const key = getDocumentKey(doc.title, doc.source_url);
+    if (!byKey.has(key)) byKey.set(key, doc);
+
+    const title = String(doc.title || '').trim().toLowerCase();
+    if (title && !byTitle.has(title)) byTitle.set(title, doc);
+  }
+
+  return { bySourceUrl, byKey, byTitle };
+}
+
+function resolveLocalDocument(docUrl, title, lookup) {
+  if (isLocalDocumentUrl(docUrl)) {
+    return {
+      public_url: String(docUrl).trim(),
+      source_url: null,
+      id: null,
+      file_path: null,
+    };
+  }
+
+  const normalized = normalizeDownloadUrl(docUrl);
+  if (normalized && lookup.bySourceUrl.has(normalized)) {
+    const doc = lookup.bySourceUrl.get(normalized);
+    return doc;
+  }
+
+  const key = getDocumentKey(title, docUrl);
+  if (lookup.byKey.has(key)) {
+    return lookup.byKey.get(key);
+  }
+
+  const titleKey = String(title || '').trim().toLowerCase();
+  if (titleKey && lookup.byTitle.has(titleKey)) {
+    return lookup.byTitle.get(titleKey);
+  }
+
+  return null;
+}
+
+function applyLocalDocumentUrlsToPackage(orderId, pkg, documents) {
+  if (!pkg || typeof pkg !== 'object') return pkg;
+
+  const out = JSON.parse(JSON.stringify(pkg));
+  const lookup = buildDocumentLookup(documents || []);
+
+  function rewriteRootField(fieldName, title) {
+    const current = out[fieldName];
+    if (!current) return;
+
+    const resolved = resolveLocalDocument(current, title, lookup);
+    if (resolved?.public_url) {
+      out[fieldName] = resolved.public_url;
+      return;
+    }
+
+    if (isExternalDocumentUrl(current)) {
+      delete out[fieldName];
+    }
+  }
+
+  rewriteRootField('agreement_doc', 'agreement_doc.pdf');
+  rewriteRootField('agreement_license', 'agreement_license.pdf');
+
+  if (Array.isArray(out.attachments)) {
+    const nextAttachments = [];
+    for (const item of out.attachments) {
+      if (!item || typeof item !== 'object') continue;
+
+      const resolved = resolveLocalDocument(item.url, item.title, lookup);
+      if (resolved?.public_url) {
+        nextAttachments.push({
+          ...item,
+          url: resolved.public_url,
+          local_path: resolved.file_path || item.local_path || null,
+        });
+      }
+    }
+    out.attachments = nextAttachments;
+  } else if (documents?.length) {
+    out.attachments = documents.map((doc) => ({
+      title: doc.title,
+      url: doc.public_url,
+      local_path: doc.file_path,
+    }));
+  }
+
+  if (documents?.length) {
+    out.saved_documents = documents.map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      url: doc.public_url,
+      file_path: doc.file_path,
+    }));
+  } else if (Array.isArray(out.saved_documents)) {
+    out.saved_documents = out.saved_documents
+      .filter((doc) => doc?.url && isLocalDocumentUrl(doc.url))
+      .map((doc) => ({
+        id: doc.id,
+        title: doc.title,
+        url: doc.url,
+        file_path: doc.file_path || doc.local_path || null,
+      }));
+  }
+
+  return out;
+}
+
+async function sanitizeOrderPackageForClient(orderId, pkg) {
+  const documents = await getOrderDocuments(orderId);
+  return applyLocalDocumentUrlsToPackage(orderId, pkg, documents);
+}
+
+async function sanitizeLtApiPayloadForClient(orderId, payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+
+  const out = JSON.parse(JSON.stringify(payload));
+
+  async function sanitizeOrderObject(orderObj) {
+    const oid = Number(orderObj?.id || orderId);
+    if (!Number.isFinite(oid)) return orderObj;
+    const documents = await getOrderDocuments(oid);
+    return applyLocalDocumentUrlsToPackage(oid, orderObj, documents);
+  }
+
+  if (out.order) {
+    out.order = await sanitizeOrderObject(out.order);
+  }
+
+  if (Array.isArray(out.orders)) {
+    out.orders = await Promise.all(out.orders.map((item) => sanitizeOrderObject(item)));
+  }
+
+  if (out.package && typeof out.package === 'object') {
+    out.package = await sanitizeOrderObject({ id: orderId, ...out.package });
+  }
+
+  return out;
+}
+
+async function prepareOrderRowForClient(orderRow) {
+  if (!orderRow) return orderRow;
+
+  const orderId = Number(orderRow.order_id);
+  let parsedPackage = {};
+  try {
+    parsedPackage = JSON.parse(orderRow.package || '{}');
+  } catch {
+    parsedPackage = {};
+  }
+
+  const sanitizedPackage = Number.isFinite(orderId)
+    ? await sanitizeOrderPackageForClient(orderId, parsedPackage)
+    : parsedPackage;
+
+  return {
+    ...orderRow,
+    package: sanitizedPackage,
+  };
+}
+
 function mergeLocalAttachments(pkg, savedDocs) {
   if (!pkg || typeof pkg !== 'object') pkg = {};
   if (!Array.isArray(pkg.attachments)) pkg.attachments = [];
@@ -343,6 +523,13 @@ function mergeLocalAttachments(pkg, savedDocs) {
     } else {
       pkg.attachments.push(entry);
     }
+
+    const key = getDocumentKey(doc.title, doc.source_url);
+    if (key === 'agreement_doc') {
+      pkg.agreement_doc = doc.public_url;
+    } else if (key === 'agreement_license') {
+      pkg.agreement_license = doc.public_url;
+    }
   }
 
   pkg.saved_documents = successful.map((doc) => ({
@@ -353,7 +540,7 @@ function mergeLocalAttachments(pkg, savedDocs) {
     file_path: doc.file_path,
   }));
 
-  return pkg;
+  return applyLocalDocumentUrlsToPackage(null, pkg, successful);
 }
 
 async function getOrderDocuments(orderId) {
@@ -378,4 +565,8 @@ module.exports = {
   countOrderDocuments,
   findExistingDocument,
   filterNewDownloadables,
+  applyLocalDocumentUrlsToPackage,
+  sanitizeOrderPackageForClient,
+  sanitizeLtApiPayloadForClient,
+  prepareOrderRowForClient,
 };

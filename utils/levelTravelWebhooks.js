@@ -296,6 +296,10 @@ async function updateOrderFromNotify(orderId, orderRow, eventReference, event, c
     }
   }
 
+  const { applyLocalDocumentUrlsToPackage, getOrderDocuments } = require('./orderDocuments');
+  const documents = await getOrderDocuments(orderId);
+  pkg = applyLocalDocumentUrlsToPackage(orderId, pkg, documents);
+
   await db.query(
     'UPDATE orders SET package = ?, order_state = COALESCE(?, order_state) WHERE order_id = ?',
     [JSON.stringify(pkg), newState, orderId]

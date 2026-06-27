@@ -258,13 +258,18 @@ async function syncOrderFromClient(orderId, authToken, options = {}) {
 
   const orderState = ltOrder.state || getNewStateFromChanges(changes) || null;
   const existingPkg = await loadExistingPackage(orderId);
-  const pkg = buildPackageFromClientOrder(
+  let pkg = buildPackageFromClientOrder(
     ltOrder,
     raw,
     authToken,
     savedDocuments,
     existingPkg
   );
+
+  const { applyLocalDocumentUrlsToPackage, getOrderDocuments } = require('./orderDocuments');
+  const documents = await getOrderDocuments(orderId);
+  pkg = applyLocalDocumentUrlsToPackage(orderId, pkg, documents);
+
   const packageUpdated = await saveOrderPackageToDb(orderId, pkg, authToken, orderState);
 
   return {
