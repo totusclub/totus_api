@@ -440,7 +440,7 @@ app.post('/vtb/create-order', async (req, res) => {
             amount: +amount.value,
             currency: "RUB",
             qrTtl: "15",
-            purpose:subscriptionPurpose,
+            purpose,
             subscriptionPurpose,
             redirectUrl: 'https://totus.club',
         };

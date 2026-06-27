@@ -10,16 +10,6 @@ function truncateAt(text, max = SBP_PURPOSE_MAX) {
   return normalized.slice(0, max);
 }
 
-function formatRuDate(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-  }).format(date);
-}
-
 function pickFirstString(values) {
   for (const value of values) {
     const text = normalizeWhitespace(value);
@@ -28,49 +18,88 @@ function pickFirstString(values) {
   return '';
 }
 
+function formatNightsRu(nights) {
+  const n = Number(nights);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n === 1) return '1 ночь';
+  if (n >= 2 && n <= 4) return `${n} ночи`;
+  return `${n} ночей`;
+}
+
+function formatAdultsRu(adults) {
+  const n = Number(adults);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} взрослый`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${n} взрослых`;
+  }
+  return `${n} взрослых`;
+}
+
+function pickPositiveNumber(values) {
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function extractNightsCount(pkg) {
+  const nested = pkg?.package && typeof pkg.package === 'object' ? pkg.package : {};
+  return pickPositiveNumber([
+    nested.dates_info?.nights_count,
+    nested.nights_count,
+    nested.dates_info?.nights,
+    nested.dates_info?.original_nights,
+    pkg?.dates_info?.nights_count,
+    pkg?.dates_info?.nights,
+    pkg?.nights_count,
+    pkg?.nights,
+  ]);
+}
+
+function extractAdultsCount(pkg) {
+  const nested = pkg?.package && typeof pkg.package === 'object' ? pkg.package : {};
+  const fromFields = pickPositiveNumber([
+    nested.adults_count,
+    pkg?.adults_count,
+    nested.dates_info?.adults,
+    pkg?.dates_info?.adults,
+  ]);
+  if (fromFields) return fromFields;
+
+  if (Array.isArray(pkg?.tourists) && pkg.tourists.length > 0) {
+    return pkg.tourists.length;
+  }
+
+  return null;
+}
+
 function extractOrderDetails(pkg) {
   if (!pkg || typeof pkg !== 'object') return '';
 
-  const direct = pickFirstString([
-    pkg.description_for_client,
-    pkg.package?.description_for_client,
-    pkg.order?.description_for_client,
-  ]);
-  if (direct) return direct;
+  const nested = pkg.package && typeof pkg.package === 'object' ? pkg.package : {};
+  const hotelObj = nested.hotel || pkg.hotel || null;
 
   const hotel = pickFirstString([
-    pkg.hotel?.name,
-    pkg.package?.hotel?.name,
+    hotelObj?.name,
     pkg.hotel_name,
   ]);
-  const startDate = pkg.dates_info?.start_date || pkg.package?.dates_info?.start_date;
-  const nights = pkg.dates_info?.nights ?? pkg.package?.dates_info?.nights;
-  const country = pickFirstString([
-    pkg.hotel?.country?.name,
-    pkg.package?.hotel?.country?.name,
-    pkg.hotel?.city?.country?.name,
-    pkg.package?.hotel?.city?.country?.name,
-  ]);
-  const city = pickFirstString([
-    pkg.hotel?.city?.name,
-    pkg.package?.hotel?.city?.name,
-  ]);
+
+  const nights = extractNightsCount(pkg);
+  const adults = extractAdultsCount(pkg);
 
   const parts = [];
   if (hotel) parts.push(hotel);
-  if (city && city !== hotel) parts.push(city);
-  if (country) parts.push(country);
 
-  const datePart = formatRuDate(startDate);
-  if (datePart) parts.push(`вылет ${datePart}`);
-  if (nights != null && nights !== '') {
-    const nightsNum = Number(nights);
-    parts.push(
-      Number.isFinite(nightsNum)
-        ? `${nightsNum} ${nightsNum === 1 ? 'ночь' : nightsNum < 5 ? 'ночи' : 'ночей'}`
-        : `${nights} ночей`,
-    );
-  }
+  const nightsPart = formatNightsRu(nights);
+  if (nightsPart) parts.push(nightsPart);
+
+  const adultsPart = formatAdultsRu(adults);
+  if (adultsPart) parts.push(adultsPart);
 
   return parts.join(', ');
 }
@@ -81,8 +110,9 @@ function buildVtbPaymentPurpose({ orderId, orderName, paymentPurpose, package: p
   const suffix = orderRef ? ` ${orderRef}` : '';
   const maxBody = Math.max(0, SBP_PURPOSE_MAX - suffix.length);
 
+  const orderDetails = extractOrderDetails(pkg);
   const rawDetails =
-    pickFirstString([paymentPurpose, extractOrderDetails(pkg), orderName]) ||
+    pickFirstString([orderDetails, orderName, paymentPurpose]) ||
     (idStr ? `Заказ №${idStr}` : 'Оплата тура');
 
   const prefix = 'Totus Club: ';
