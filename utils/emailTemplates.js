@@ -44,7 +44,6 @@ function emailShell({ title, bodyHtml, footerNote }) {
           <tr>
             <td style="padding:24px 12px 0;text-align:center;">
               <p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:${BRAND.gray};">&copy; ${year} Totus Club. Все права защищены.</p>
-              <p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:${BRAND.lightGray};">ООО «Арлекинотур», ИНН 9729298840</p>
               ${footerNote ? `<p style="margin:0;font-size:12px;line-height:1.6;color:${BRAND.lightGray};">${footerNote}</p>` : ''}
             </td>
           </tr>
