@@ -1,21 +1,22 @@
 const db = require('../db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const {post} = require("axios");
 const {generateUniqueLoyaltyId} = require("../utils/loyaltyGenerator");
+const { sendEmail } = require('../utils/yandexCloudEmail');
+const { verificationCodeTemplate } = require('../utils/emailTemplates');
 
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
-const transporter = nodemailer.createTransport({
-    host: 'smtp.yandex.com',
-    port: 465, // or use 587 with secure: false
-    secure: true, // true for 465, false for 587
-    auth: {
-        user: process.env.EMAIL_USER, // e.g. yourname@yandex.com
-        pass: process.env.EMAIL_PASS, // app password
-    },
-});
+async function sendVerificationEmail(email, code, { name } = {}) {
+    const verificationEmail = verificationCodeTemplate(code, { name });
+    await sendEmail({
+        to: email,
+        subject: verificationEmail.subject,
+        text: verificationEmail.text,
+        html: verificationEmail.html,
+    });
+}
 
 function generateUserCode() {
     return Array.from({ length: 4 }, () =>
@@ -24,8 +25,7 @@ function generateUserCode() {
 }
 exports.signup = async (req, res) => {
     const { name, l_name, email, phone } = req.body;
-    // const code = generateCode();
-    const code = 1111;
+    const code = generateCode();
 
     try {
         const codeLoyalty = generateUniqueLoyaltyId();
@@ -35,14 +35,9 @@ exports.signup = async (req, res) => {
             'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
             [name, l_name, email, phone, code, codeLoyalty]
         );
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: email,
-            subject: 'Your verification code',
-            text: `Your code is ${code}`,
-        });
+        await sendVerificationEmail(email, code, { name });
 
-        res.status(201).json({ message: 'User created. Verification code sent to email.',screen:'VERIFICATION' });
+        res.status(201).json({ message: 'Пользователь создан. Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
         res.status(500).json({ message: 'Signup failed', error: err.message });
     }
@@ -68,21 +63,15 @@ exports.verifyCode = async (req, res) => {
 
 exports.signin = async (req, res) => {
     const { email } = req.body;
-    // const code = generateCode();
-    const code = 1111;
+    const code = generateCode();
     try {
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         const user = users[0];
         if (!user) return res.status(201).json({ message: 'User not found',screen:'SIGNUP' });
 
         await db.query('UPDATE users SET code = ? WHERE email = ?', [code, email]);
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: email,
-            subject: 'Your verification code',
-            text: `Your code is ${code}`,
-        });
-        res.status(201).json({ message: 'Verification code sent to email.',screen:'VERIFICATION' });
+        await sendVerificationEmail(email, code, { name: user.name });
+        res.status(201).json({ message: 'Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
         res.status(500).json({ message: 'Signin failed', error: err.message });
     }

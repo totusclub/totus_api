@@ -12,6 +12,7 @@ const faqRoutes = require('./routes/faq.routes');
 const popularRoutes = require('./routes/popular.routes');
 const contentRoutes = require('./routes/content.routes');
 const pagesRoutes = require('./routes/pages.routes');
+const emailRoutes = require('./routes/email.routes');
 const db = require("./db");
 const crypto = require('crypto');
 const path = require('path');
@@ -1185,6 +1186,7 @@ app.get('/tours/level_travel/history', verifyPartnerApiKey, async (req, res) => 
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/email', emailRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/admin', faqRoutes);
 app.use('/api/admin', popularRoutes);
