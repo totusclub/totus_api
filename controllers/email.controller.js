@@ -2,6 +2,7 @@ const { sendEmail } = require('../utils/yandexCloudEmail');
 const { welcomeTotusClubTemplate, verificationCodeTemplate } = require('../utils/emailTemplates');
 const {
     orderCreatedTemplate,
+    orderPaidPendingTemplate,
     orderConfirmedTemplate,
     orderDocumentsTemplate,
     orderCancelledTemplate,
@@ -18,7 +19,11 @@ const TEMPLATE_META = {
     },
     order_created: {
         label: 'Заказ создан',
-        description: 'Order created, waiting for confirmation',
+        description: 'Order created with 15 min SBP payment',
+    },
+    order_paid_pending: {
+        label: 'Оплата получена',
+        description: 'Payment received, waiting for booking confirmation',
     },
     order_confirmed: {
         label: 'Бронирование подтверждено',
@@ -41,6 +46,9 @@ function buildTemplate(template, options = {}) {
         orderId = 12345,
         details = 'Отель Rixos, 7 ночей, 2 взрослых',
         reason = 'Туроператор отменил бронирование',
+        payUrl = 'https://qr.nspk.ru/sample-payment-link',
+        amount = 125000,
+        paymentMinutes = 15,
         documents = [
             {
                 title: 'Договор.pdf',
@@ -59,7 +67,9 @@ function buildTemplate(template, options = {}) {
         case 'verification':
             return verificationCodeTemplate(code, { name });
         case 'order_created':
-            return orderCreatedTemplate({ name, orderId, details });
+            return orderCreatedTemplate({ name, orderId, details, payUrl, amount, paymentMinutes });
+        case 'order_paid_pending':
+            return orderPaidPendingTemplate({ name, orderId, details, amount });
         case 'order_confirmed':
             return orderConfirmedTemplate({ name, orderId, details });
         case 'order_documents':

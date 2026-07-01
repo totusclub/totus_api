@@ -466,6 +466,27 @@ app.post('/vtb/create-order', async (req, res) => {
             } catch (dbErr) {
                 console.error("VTB create-order DB update:", dbErr.message);
             }
+
+            if (sbpPayload) {
+                try {
+                    const [rows] = await db.query(
+                        "SELECT * FROM orders WHERE order_id = ? LIMIT 1",
+                        [cleanOrderId]
+                    );
+                    if (rows[0]) {
+                        const { sendOrderCreatedEmail } = require("./utils/orderEmails");
+                        sendOrderCreatedEmail(cleanOrderId, rows[0], {
+                            payUrl: sbpPayload,
+                            amount: amount?.value,
+                            paymentMinutes: 15,
+                        }).catch((err) => {
+                            console.error("[ORDER_EMAIL] vtb/create-order:", err.message);
+                        });
+                    }
+                } catch (emailErr) {
+                    console.error("[ORDER_EMAIL] vtb/create-order lookup:", emailErr.message);
+                }
+            }
         }
 
         res.json({
@@ -557,21 +578,6 @@ app.post('/create-package', async (req, res) => {
                     'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
                     [order_id, package, user_id]
                 );
-            }
-
-            try {
-                const [rows] = await db.query(
-                    'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
-                    [order_id]
-                );
-                if (rows[0]) {
-                    const { sendOrderCreatedEmail } = require('./utils/orderEmails');
-                    sendOrderCreatedEmail(order_id, rows[0]).catch((err) => {
-                        console.error('[ORDER_EMAIL] create-package:', err.message);
-                    });
-                }
-            } catch (emailErr) {
-                console.error('[ORDER_EMAIL] create-package lookup:', emailErr.message);
             }
         }
 
@@ -1010,6 +1016,23 @@ app.post('/check_pay', async (req, res) => {
                 );
             } catch (dbErr) {
                 console.error("DB update failed:", dbErr);
+            }
+
+            if (paid && !alreadyNotified) {
+                try {
+                    const [rows] = await db.query(
+                        "SELECT * FROM orders WHERE order_id = ? LIMIT 1",
+                        [resolved_order_id]
+                    );
+                    if (rows[0]) {
+                        const { sendOrderPaidPendingEmail } = require("./utils/orderEmails");
+                        sendOrderPaidPendingEmail(resolved_order_id, rows[0], { amount }).catch((err) => {
+                            console.error("[ORDER_EMAIL] check_pay:", err.message);
+                        });
+                    }
+                } catch (emailErr) {
+                    console.error("[ORDER_EMAIL] check_pay lookup:", emailErr.message);
+                }
             }
         }
 

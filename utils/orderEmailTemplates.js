@@ -60,7 +60,38 @@ function documentsListText(documents) {
     return `\n\nДокументы:\n${documents.map((doc) => `- ${doc.title}: ${doc.url}`).join('\n')}`;
 }
 
-function orderCreatedTemplate({ name, orderId, details }) {
+function formatRubles(amount) {
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return new Intl.NumberFormat('ru-RU', {
+        style: 'currency',
+        currency: 'RUB',
+        maximumFractionDigits: 0,
+    }).format(value);
+}
+
+function paymentNoticeBlock({ amount, paymentMinutes = 15 }) {
+    const formattedAmount = formatRubles(amount);
+    return `
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;background:#fff8f3;border:1px solid #ffe2cc;border-radius:14px;">
+        <tr>
+          <td style="padding:20px 22px;">
+            <p style="margin:0 0 10px;font-size:14px;line-height:1.5;color:${BRAND.orange};font-weight:700;">Оплата заказа</p>
+            <p style="margin:0 0 8px;font-size:15px;line-height:1.6;color:${BRAND.dark};">
+              Для подтверждения бронирования оплатите заказ в течение <strong>${paymentMinutes} минут</strong>.
+            </p>
+            ${formattedAmount ? `<p style="margin:0;font-size:15px;line-height:1.6;color:${BRAND.gray};">Сумма к оплате: <strong style="color:${BRAND.dark};">${escapeHtml(formattedAmount)}</strong></p>` : ''}
+          </td>
+        </tr>
+      </table>`;
+}
+
+function orderCreatedTemplate({ name, orderId, details, payUrl, amount, paymentMinutes = 15 }) {
+    const formattedAmount = formatRubles(amount);
+    const payButton = payUrl
+        ? ctaButton('Оплатить через СБП', payUrl)
+        : ctaButton('Открыть Totus Club', BRAND.siteUrl);
+
     const bodyHtml = `
           <tr>
             <td style="padding:36px 36px 24px;text-align:center;border-bottom:1px solid ${BRAND.border};">
@@ -72,20 +103,67 @@ function orderCreatedTemplate({ name, orderId, details }) {
             <td style="padding:32px 36px 36px;">
               ${greetingBlock(name)}
               <p style="margin:0 0 20px;font-size:16px;line-height:1.7;color:${BRAND.gray};">
-                Ваш заказ успешно оформлен и ожидает подтверждения. Мы сообщим вам, как только бронирование будет принято.
+                Ваш заказ успешно оформлен. Чтобы мы могли подтвердить бронирование, завершите оплату в течение ${paymentMinutes} минут.
               </p>
               ${orderSummaryBlock({ orderId, details })}
+              ${paymentNoticeBlock({ amount, paymentMinutes })}
               <p style="margin:0;font-size:14px;line-height:1.7;color:${BRAND.lightGray};">
-                Статус заказа можно отслеживать в личном кабинете Totus Club.
+                Нажмите кнопку ниже, чтобы перейти к оплате через СБП.
+              </p>
+              ${payButton}
+            </td>
+          </tr>`;
+
+    const amountText = formattedAmount ? `\nСумма к оплате: ${formattedAmount}` : '';
+    const payText = payUrl ? `\nОплатить через СБП: ${payUrl}` : '';
+
+    return {
+        subject: `Заказ №${orderId} создан — оплатите в течение ${paymentMinutes} минут`,
+        html: emailShell({ title: 'Заказ создан', bodyHtml, footerNote: 'Письмо отправлено с noreply@totus.club' }),
+        text: `${name ? `Здравствуйте, ${name}!\n\n` : ''}Ваш заказ №${orderId} успешно создан. Оплатите его в течение ${paymentMinutes} минут.${amountText}${details ? `\n\n${details}` : ''}${payText}\n\nTotus Club: ${BRAND.siteUrl}`,
+    };
+}
+
+function orderPaidPendingTemplate({ name, orderId, details, amount }) {
+    const formattedAmount = formatRubles(amount);
+
+    const bodyHtml = `
+          <tr>
+            <td style="padding:36px 36px 24px;text-align:center;border-bottom:1px solid ${BRAND.border};">
+              <p style="margin:0 0 10px;font-size:13px;line-height:1.4;color:${BRAND.orange};font-weight:700;letter-spacing:1px;text-transform:uppercase;">Totus Club</p>
+              <h1 style="margin:0;font-size:26px;line-height:1.3;color:${BRAND.dark};font-weight:700;">Оплата получена</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 36px 36px;">
+              ${greetingBlock(name)}
+              <p style="margin:0 0 20px;font-size:16px;line-height:1.7;color:${BRAND.gray};">
+                Ваш платёж успешно принят. Заказ ожидает подтверждения бронирования — мы сообщим вам, как только процесс будет завершён.
+              </p>
+              ${orderSummaryBlock({ orderId, details })}
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;background:#f0faf4;border:1px solid #cce8d4;border-radius:14px;">
+                <tr>
+                  <td style="padding:20px 22px;">
+                    <p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#1f7a3f;font-weight:700;">Статус оплаты</p>
+                    <p style="margin:0;font-size:15px;line-height:1.6;color:${BRAND.gray};">
+                      Оплачено${formattedAmount ? `: <strong style="color:${BRAND.dark};">${escapeHtml(formattedAmount)}</strong>` : ''}. Ожидаем подтверждение бронирования.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0;font-size:14px;line-height:1.7;color:${BRAND.lightGray};">
+                Спасибо за оплату. Следующее письмо придёт после подтверждения бронирования.
               </p>
               ${ctaButton('Открыть Totus Club', BRAND.siteUrl)}
             </td>
           </tr>`;
 
+    const amountText = formattedAmount ? `\nСумма оплаты: ${formattedAmount}` : '';
+
     return {
-        subject: `Заказ №${orderId} создан — Totus Club`,
-        html: emailShell({ title: 'Заказ создан', bodyHtml, footerNote: 'Письмо отправлено с noreply@totus.club' }),
-        text: `${name ? `Здравствуйте, ${name}!\n\n` : ''}Ваш заказ №${orderId} успешно создан и ожидает подтверждения.\n${details ? `\n${details}\n` : ''}\nTotus Club: ${BRAND.siteUrl}`,
+        subject: `Оплата по заказу №${orderId} получена — Totus Club`,
+        html: emailShell({ title: 'Оплата получена', bodyHtml, footerNote: 'Письмо отправлено с noreply@totus.club' }),
+        text: `${name ? `Здравствуйте, ${name}!\n\n` : ''}Ваш платёж по заказу №${orderId} успешно получен. Заказ ожидает подтверждения бронирования.${amountText}${details ? `\n\n${details}` : ''}\n\nTotus Club: ${BRAND.siteUrl}`,
     };
 }
 
@@ -176,6 +254,7 @@ function orderCancelledTemplate({ name, orderId, details, reason }) {
 
 module.exports = {
     orderCreatedTemplate,
+    orderPaidPendingTemplate,
     orderConfirmedTemplate,
     orderDocumentsTemplate,
     orderCancelledTemplate,

@@ -6,6 +6,7 @@ const { extractOrderDetails } = require('./vtbPaymentPurpose');
 const { getOrderDocuments } = require('./orderDocuments');
 const {
     orderCreatedTemplate,
+    orderPaidPendingTemplate,
     orderConfirmedTemplate,
     orderDocumentsTemplate,
     orderCancelledTemplate,
@@ -209,8 +210,18 @@ async function sendTypedOrderEmail(orderId, orderRow, emailType, buildTemplate, 
     };
 }
 
-async function sendOrderCreatedEmail(orderId, orderRow) {
-    return sendTypedOrderEmail(orderId, orderRow, 'created', orderCreatedTemplate);
+async function sendOrderCreatedEmail(orderId, orderRow, { payUrl, amount, paymentMinutes = 15 } = {}) {
+    return sendTypedOrderEmail(orderId, orderRow, 'created', orderCreatedTemplate, {
+        payUrl,
+        amount,
+        paymentMinutes,
+    });
+}
+
+async function sendOrderPaidPendingEmail(orderId, orderRow, { amount } = {}) {
+    return sendTypedOrderEmail(orderId, orderRow, 'paid_pending', orderPaidPendingTemplate, {
+        amount,
+    });
 }
 
 async function sendOrderConfirmedEmail(orderId, orderRow) {
@@ -264,6 +275,7 @@ async function notifyOrderStatusEmail(orderId, orderRow, { newState, event, mess
 module.exports = {
     resolveOrderRecipient,
     sendOrderCreatedEmail,
+    sendOrderPaidPendingEmail,
     sendOrderConfirmedEmail,
     sendOrderDocumentsEmail,
     sendOrderCancelledEmail,

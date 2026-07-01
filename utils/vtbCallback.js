@@ -219,6 +219,27 @@ async function processVtbCallback(payload) {
 
       if (payStatus === 'RECONCILED' && !duplicate) {
         ltNotify = await notifyLevelTravelPaid(dbOrderId, amount);
+
+        try {
+          const [rows] = await db.query(
+            'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
+            [dbOrderId]
+          );
+          if (rows[0]) {
+            const { sendOrderPaidPendingEmail } = require('./orderEmails');
+            sendOrderPaidPendingEmail(dbOrderId, rows[0], { amount }).catch((err) => {
+              logCallbackError(LOG, 'EMAIL', 'Paid pending email failed', {
+                order_id: dbOrderId,
+                error: err.message,
+              });
+            });
+          }
+        } catch (emailErr) {
+          logCallbackError(LOG, 'EMAIL', 'Paid pending email setup failed', {
+            order_id: dbOrderId,
+            error: emailErr.message,
+          });
+        }
       } else if (payStatus !== 'RECONCILED') {
         logCallback(LOG, 'LT_NOTIFY', 'NOT sent — payment not RECONCILED', {
           pay_status: payStatus,
