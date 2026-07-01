@@ -196,4 +196,9 @@ function verificationCodeTemplate(code, { name } = {}) {
     };
 }
 
-module.exports = { welcomeTotusClubTemplate, verificationCodeTemplate };
+module.exports = {
+    welcomeTotusClubTemplate,
+    verificationCodeTemplate,
+    emailShell,
+    BRAND,
+};

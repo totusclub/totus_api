@@ -558,6 +558,21 @@ app.post('/create-package', async (req, res) => {
                     [order_id, package, user_id]
                 );
             }
+
+            try {
+                const [rows] = await db.query(
+                    'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
+                    [order_id]
+                );
+                if (rows[0]) {
+                    const { sendOrderCreatedEmail } = require('./utils/orderEmails');
+                    sendOrderCreatedEmail(order_id, rows[0]).catch((err) => {
+                        console.error('[ORDER_EMAIL] create-package:', err.message);
+                    });
+                }
+            } catch (emailErr) {
+                console.error('[ORDER_EMAIL] create-package lookup:', emailErr.message);
+            }
         }
 
         res.json(response.data);

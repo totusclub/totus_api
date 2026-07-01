@@ -399,6 +399,29 @@ async function processOrderNotify(body) {
         event,
         ...orderUpdate,
       });
+
+      try {
+        const { notifyOrderStatusEmail } = require('./orderEmails');
+        const refreshedOrder = await findOrderByLtId(order_id);
+        if (refreshedOrder) {
+          notifyOrderStatusEmail(order_id, refreshedOrder, {
+            newState,
+            event,
+            message,
+            savedDocuments,
+          }).catch((err) => {
+            logCallbackError(LOG_NOTIFY, 'EMAIL', 'Order status email failed', {
+              order_id,
+              error: err.message,
+            });
+          });
+        }
+      } catch (emailErr) {
+        logCallbackError(LOG_NOTIFY, 'EMAIL', 'Order status email setup failed', {
+          order_id,
+          error: emailErr.message,
+        });
+      }
     } catch (err) {
       orderUpdateError = err.message;
       logCallbackError(LOG_NOTIFY, 'DB', 'Order update failed — will still save event', {

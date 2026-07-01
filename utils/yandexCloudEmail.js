@@ -1,4 +1,5 @@
 const { SESv2Client, SendEmailCommand } = require('@aws-sdk/client-sesv2');
+const nodemailer = require('nodemailer');
 
 const POSTBOX_ENDPOINT = 'https://postbox.cloud.yandex.net';
 const POSTBOX_REGION = 'ru-central1';
@@ -33,8 +34,48 @@ function getFromAddress() {
     return from;
 }
 
-async function sendEmail({ to, subject, text, html }) {
+async function buildRawMimeMessage({ to, subject, text, html, attachments }) {
+    const transporter = nodemailer.createTransport({
+        streamTransport: true,
+        newline: 'unix',
+        buffer: true,
+    });
+
+    const info = await transporter.sendMail({
+        from: getFromAddress(),
+        to: Array.isArray(to) ? to.join(', ') : to,
+        subject,
+        text,
+        html,
+        attachments,
+    });
+
+    return info.message;
+}
+
+async function sendEmail({ to, subject, text, html, attachments }) {
     const recipients = Array.isArray(to) ? to : [to];
+
+    if (attachments?.length) {
+        const rawMessage = await buildRawMimeMessage({
+            to: recipients,
+            subject,
+            text,
+            html,
+            attachments,
+        });
+
+        const command = new SendEmailCommand({
+            Content: {
+                Raw: {
+                    Data: rawMessage,
+                },
+            },
+        });
+
+        return getClient().send(command);
+    }
+
     const body = {};
 
     if (text) {
