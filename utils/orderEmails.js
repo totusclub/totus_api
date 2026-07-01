@@ -57,14 +57,22 @@ async function resolveOrderRecipient(orderRow, pkg) {
         }
     }
 
+    if (pkg?._customer_email) {
+        return {
+            email: pkg._customer_email,
+            name: pkg._customer_name || null,
+        };
+    }
+
     const client = pkg?.client || pkg?.package?.client;
     if (client?.email) {
         const name = [client.name, client.surname].filter(Boolean).join(' ').trim();
         return { email: client.email, name: name || null };
     }
 
-    if (Array.isArray(pkg?.tourists)) {
-        const tourist = pkg.tourists.find((item) => item?.email);
+    const tourists = pkg?.tourists || pkg?.package?.tourists;
+    if (Array.isArray(tourists)) {
+        const tourist = tourists.find((item) => item?.email);
         if (tourist?.email) {
             const name = [tourist.name, tourist.surname].filter(Boolean).join(' ').trim();
             return { email: tourist.email, name: name || null };
@@ -211,7 +219,8 @@ async function sendTypedOrderEmail(orderId, orderRow, emailType, buildTemplate, 
 }
 
 async function sendOrderCreatedEmail(orderId, orderRow, { payUrl, amount, paymentMinutes = 15 } = {}) {
-    return sendTypedOrderEmail(orderId, orderRow, 'created', orderCreatedTemplate, {
+    const emailType = payUrl ? 'created_payment' : 'created';
+    return sendTypedOrderEmail(orderId, orderRow, emailType, orderCreatedTemplate, {
         payUrl,
         amount,
         paymentMinutes,

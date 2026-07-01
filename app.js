@@ -396,112 +396,25 @@ app.post('/vtb/create-order', async (req, res) => {
             paymentPurpose,
             purposeText,
         } = req.body;
-        const data = await generationBankToken();
 
         if (!orderId || !orderName || !expire || !amount?.value || !amount?.code || !returnUrl) {
             return res.status(400).json({ error: "Missing required fields" });
         }
 
-        if (!data?.access_token) {
-            return res.status(500).json({ error: "Failed to obtain VTB access token" });
-        }
-
-        const headers = {
-            "X-IBM-Client-Id": "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru",
-            "Merchant-Authorization": "93f69779-51bd-4787-acd7-c8573cdbdc9c",
-            "Authorization": `Bearer ${data.access_token}`,
-            "Content-Type": "application/json",
-        };
-
-        const cleanOrderId = String(orderId).replace(/^ORDER/i, "");
-        let orderPackage = null;
-        if (cleanOrderId) {
-            try {
-                const [rows] = await db.query(
-                    "SELECT package FROM orders WHERE order_id = ? LIMIT 1",
-                    [cleanOrderId]
-                );
-                if (rows[0]?.package) {
-                    orderPackage = JSON.parse(rows[0].package);
-                }
-            } catch (dbErr) {
-                console.error("VTB create-order package lookup:", dbErr.message);
-            }
-        }
-
-        const { buildVtbPaymentPurpose } = require("./utils/vtbPaymentPurpose");
-        const { purpose, subscriptionPurpose } = buildVtbPaymentPurpose({
+        const { createVtbPaymentForOrder } = require("./utils/vtbCreatePayment");
+        const result = await createVtbPaymentForOrder({
             orderId,
             orderName,
+            amount,
             paymentPurpose: paymentPurpose || purposeText,
-            package: orderPackage,
+            paymentMinutes: 15,
+            sendEmail: true,
         });
 
-        const vtbPayload = {
-            amount: +amount.value,
-            currency: "RUB",
-            qrTtl: "15",
-            purpose,
-            subscriptionPurpose,
-            redirectUrl: 'https://totus.club',
-        };
-        // requestId,
-        const response = await axios.post(
-            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
-            vtbPayload,
-            { headers, ...vtbAxiosConfig }
-        );
-
-        const vtbBody = response.data || {};
-        const qrData = vtbBody.data || {};
-        const qrcId = qrData.qrcId || null;
-        const sbpPayload = qrData.payload || null;
-
-        if (qrcId && cleanOrderId) {
-            try {
-                await db.query(
-                    "UPDATE orders SET pay_status = ?, transaction_code = ? WHERE order_id = ?",
-                    ["CREATED", qrcId, cleanOrderId]
-                );
-            } catch (dbErr) {
-                console.error("VTB create-order DB update:", dbErr.message);
-            }
-
-            if (sbpPayload) {
-                try {
-                    const [rows] = await db.query(
-                        "SELECT * FROM orders WHERE order_id = ? LIMIT 1",
-                        [cleanOrderId]
-                    );
-                    if (rows[0]) {
-                        const { sendOrderCreatedEmail } = require("./utils/orderEmails");
-                        sendOrderCreatedEmail(cleanOrderId, rows[0], {
-                            payUrl: sbpPayload,
-                            amount: amount?.value,
-                            paymentMinutes: 15,
-                        }).catch((err) => {
-                            console.error("[ORDER_EMAIL] vtb/create-order:", err.message);
-                        });
-                    }
-                } catch (emailErr) {
-                    console.error("[ORDER_EMAIL] vtb/create-order lookup:", emailErr.message);
-                }
-            }
-        }
-
-        res.json({
-            ...vtbBody,
-            qrcId,
-            payload: sbpPayload,
-            payUrl: sbpPayload,
-            object: {
-                payUrl: sbpPayload,
-                qrcId,
-            },
-        });
+        res.json(result);
     } catch (error) {
         console.error("VTB Order Creation Error:", error.response?.data || error.message);
-        res.status(500).json({ error: "Failed to create VTB order" });
+        res.status(500).json({ error: "Failed to create VTB order", details: error.message });
     }
 });
 
@@ -543,7 +456,8 @@ app.post('/create-package', async (req, res) => {
                 name: "Туртест",
                 surname: "Арлекино",
                 email: "arlekinotour_test@level.travel",
-                phone: "7972988888"
+                phone: "7972988888",
+                ...(payload?.client || {}),
             },
             package_id:payload?.package_id,
             tourists:payload?.tourists,
@@ -551,7 +465,7 @@ app.post('/create-package', async (req, res) => {
             payment_option: "card",
             selected_extras:[],
             source:'desktop',
-            comment: "yafob30749@lhory.com;7920998299;Дмитрий;Васильков"
+            comment: payload?.comment || "yafob30749@lhory.com;7920998299;Дмитрий;Васильков"
         }
 
         console.log('params',params)
@@ -566,6 +480,25 @@ app.post('/create-package', async (req, res) => {
             if (authToken) {
                 orderData._lt_auth_token = authToken;
             }
+
+            const customerEmail =
+                payload?.email ||
+                payload?.client?.email ||
+                payload?.tourists?.find?.((item) => item?.email)?.email ||
+                params.client?.email ||
+                null;
+            const customerName =
+                payload?.name ||
+                [payload?.client?.name, payload?.client?.surname].filter(Boolean).join(' ').trim() ||
+                null;
+
+            if (customerEmail) {
+                orderData._customer_email = customerEmail;
+            }
+            if (customerName) {
+                orderData._customer_name = customerName;
+            }
+
             let package = JSON.stringify(orderData);
             let user_id = payload.user_id;
             try {
@@ -578,6 +511,57 @@ app.post('/create-package', async (req, res) => {
                     'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
                     [order_id, package, user_id]
                 );
+            }
+
+            const paymentAmount =
+                payload?.amount ||
+                payload?.payment?.amount ||
+                orderData?.price ||
+                orderData?.total_price ||
+                orderData?.amount ||
+                null;
+
+            if (payload?.payUrl) {
+                try {
+                    const { savePaymentToPackage } = require('./utils/orderPayment');
+                    const { normalizeAmount } = require('./utils/vtbCreatePayment');
+                    const normalizedAmount = normalizeAmount(paymentAmount);
+                    await savePaymentToPackage(order_id, {
+                        payUrl: payload.payUrl,
+                        qrcId: payload?.qrcId || null,
+                        amount: normalizedAmount?.value,
+                        paymentMinutes: 15,
+                    });
+
+                    const [rows] = await db.query(
+                        'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
+                        [order_id]
+                    );
+                    if (rows[0]) {
+                        const { sendOrderCreatedEmail } = require('./utils/orderEmails');
+                        sendOrderCreatedEmail(order_id, rows[0], {
+                            payUrl: payload.payUrl,
+                            amount: normalizedAmount?.value,
+                            paymentMinutes: 15,
+                        }).catch((err) => {
+                            console.error('[ORDER_EMAIL] create-package payUrl:', err.message);
+                        });
+                    }
+                } catch (emailErr) {
+                    console.error('[ORDER_EMAIL] create-package payUrl lookup:', emailErr.message);
+                }
+            } else if (paymentAmount) {
+                const { createVtbPaymentForOrder } = require('./utils/vtbCreatePayment');
+                createVtbPaymentForOrder({
+                    orderId: order_id,
+                    orderName: payload?.orderName || `ORDER${order_id}`,
+                    amount: paymentAmount,
+                    paymentPurpose: payload?.paymentPurpose || payload?.purposeText,
+                    paymentMinutes: 15,
+                    sendEmail: true,
+                }).catch((err) => {
+                    console.error('[ORDER_EMAIL] create-package auto-payment:', err.message);
+                });
             }
         }
 
@@ -747,11 +731,70 @@ app.get('/orders', async (req, res) => {
         }
 
         const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const { attachPaymentToOrderResponse } = require('./utils/orderPayment');
         const order = await prepareOrderRowForClient(orders[0]);
-        res.json(order);
+        res.json(attachPaymentToOrderResponse(orders[0], order));
     } catch (error) {
         console.error('Error orders:', error.message);
         res.status(500).json({ error: 'Failed to get order' });
+    }
+});
+
+app.get('/orders/:order_id/payment', async (req, res) => {
+    try {
+        const { getOrderPayment } = require('./utils/orderPayment');
+        const { createVtbPaymentForOrder, normalizeAmount } = require('./utils/vtbCreatePayment');
+
+        let payment = await getOrderPayment(req.params.order_id);
+
+        if (!payment) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+
+        const shouldEnsure =
+            req.query.ensure === '1' ||
+            req.query.ensure === 'true' ||
+            req.query.create === '1';
+
+        if (shouldEnsure && !payment.paid && !payment.payUrl) {
+            const [rows] = await db.query(
+                'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
+                [String(req.params.order_id).replace(/^ORDER/i, '')]
+            );
+            const orderRow = rows[0];
+            if (orderRow) {
+                let pkg = {};
+                try {
+                    pkg = JSON.parse(orderRow.package || '{}');
+                } catch {
+                    pkg = {};
+                }
+
+                const amount =
+                    normalizeAmount(req.query.amount) ||
+                    normalizeAmount(pkg._pay_amount) ||
+                    normalizeAmount(pkg.price) ||
+                    normalizeAmount(pkg.total_price) ||
+                    normalizeAmount(pkg.amount);
+
+                if (amount) {
+                    await createVtbPaymentForOrder({
+                        orderId: req.params.order_id,
+                        orderName: req.query.orderName || `ORDER${req.params.order_id}`,
+                        amount,
+                        paymentPurpose: req.query.paymentPurpose,
+                        paymentMinutes: 15,
+                        sendEmail: false,
+                    });
+                    payment = await getOrderPayment(req.params.order_id);
+                }
+            }
+        }
+
+        res.json(payment);
+    } catch (error) {
+        console.error('Error order payment:', error.message);
+        res.status(500).json({ error: 'Failed to get order payment' });
     }
 });
 
