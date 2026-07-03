@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('../db');
 const { sendEmail } = require('./yandexCloudEmail');
 const { extractOrderDetails } = require('./vtbPaymentPurpose');
@@ -63,6 +64,28 @@ function isConfirmedState(state) {
     return value === 'confirmed' || value === 'flight_confirmed';
 }
 
+function isDocumentsState(state) {
+    return normalizeState(state) === 'documents_sent';
+}
+
+function normalizeDocumentTitle(title) {
+    return String(title || 'document.pdf').trim().toLowerCase();
+}
+
+function dedupeDocumentsByName(docs) {
+    const seen = new Set();
+    const unique = [];
+
+    for (const doc of docs) {
+        const nameKey = normalizeDocumentTitle(doc.title);
+        if (seen.has(nameKey)) continue;
+        seen.add(nameKey);
+        unique.push(doc);
+    }
+
+    return unique;
+}
+
 async function resolveOrderRecipient(orderRow, pkg) {
     if (orderRow?.user_id) {
         const [users] = await db.query(
@@ -110,22 +133,25 @@ function buildPublicDocumentUrl(publicUrl) {
 }
 
 async function loadDocumentAttachments(orderId) {
-    const documents = await getOrderDocuments(orderId);
+    const documents = dedupeDocumentsByName(await getOrderDocuments(orderId));
     const attachments = [];
-    const seenPaths = new Set();
+    const seenNames = new Set();
     let totalSize = 0;
 
     for (const doc of documents) {
+        const nameKey = normalizeDocumentTitle(doc.title);
+        if (seenNames.has(nameKey)) continue;
+
         const relativePath = doc.file_path || doc.public_url?.replace(/^\//, '');
         if (!relativePath) continue;
 
         const absolutePath = path.join(__dirname, '..', relativePath);
-        if (!fs.existsSync(absolutePath) || seenPaths.has(absolutePath)) continue;
+        if (!fs.existsSync(absolutePath)) continue;
 
         const stat = fs.statSync(absolutePath);
         if (totalSize + stat.size > MAX_ATTACHMENT_BYTES) continue;
 
-        seenPaths.add(absolutePath);
+        seenNames.add(nameKey);
         attachments.push({
             filename: doc.title || path.basename(absolutePath),
             path: absolutePath,
@@ -137,11 +163,12 @@ async function loadDocumentAttachments(orderId) {
     return attachments;
 }
 
-function buildDocumentLink(doc) {
-    return {
-        title: doc.title || 'Документ',
-        url: buildPublicDocumentUrl(doc.public_url),
-    };
+function buildDocumentEmailDedupeKey(doc) {
+    const name = normalizeDocumentTitle(doc?.title);
+    const raw = `doc:${name}`;
+    if (raw.length <= 64) return raw;
+    const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 32);
+    return `doc:${hash}`;
 }
 
 function loadSingleDocumentAttachment(doc) {
@@ -170,6 +197,13 @@ function isNewlySavedDocument(doc) {
     );
 }
 
+function buildDocumentLink(doc) {
+    return {
+        title: doc.title || 'Документ',
+        url: buildPublicDocumentUrl(doc.public_url),
+    };
+}
+
 const ONE_TIME_EMAIL_TYPES = new Set([
     'created',
     'created_payment',
@@ -178,16 +212,8 @@ const ONE_TIME_EMAIL_TYPES = new Set([
     'cancelled',
 ]);
 async function buildDocumentLinks(orderId) {
-    const documents = await getOrderDocuments(orderId);
-    const seen = new Set();
-
-    return documents
-        .filter((doc) => {
-            const key = doc.file_path || doc.public_url || doc.title;
-            if (!key || seen.has(key)) return false;
-            seen.add(key);
-            return Boolean(doc.public_url);
-        })
+    return dedupeDocumentsByName(await getOrderDocuments(orderId))
+        .filter((doc) => Boolean(doc.public_url))
         .map((doc) => buildDocumentLink(doc));
 }
 
@@ -353,14 +379,17 @@ async function sendOrderConfirmedEmail(orderId, orderRow) {
 }
 
 async function sendSingleDocumentEmail(orderId, orderRow, doc) {
-    if (!doc?.id) {
-        logCallback(LOG, 'SKIP', 'Document email needs saved document id', { order_id: orderId });
-        return { skipped: true, reason: 'no_document_id' };
+    if (!doc?.public_url) {
+        logCallback(LOG, 'SKIP', 'Document email needs saved file', { order_id: orderId });
+        return { skipped: true, reason: 'no_document' };
     }
 
+    const dedupeKey = buildDocumentEmailDedupeKey(doc);
     const documents = [buildDocumentLink(doc)];
+
+    // One email per document; skip if this document name was already emailed for the order.
     return sendTypedOrderEmail(orderId, orderRow, 'documents', orderDocumentsTemplate, {
-        dedupeKey: `document:${doc.id}`,
+        dedupeKey,
         documents,
         attachments: loadSingleDocumentAttachment(doc),
     });
@@ -373,7 +402,9 @@ async function sendOrderDocumentsEmail(orderId, orderRow) {
         return { skipped: true, reason: 'no_documents' };
     }
 
+    // One email per order with all unique PDFs attached (deduped by document name).
     return sendTypedOrderEmail(orderId, orderRow, 'documents', orderDocumentsTemplate, {
+        dedupeKey: 'documents',
         documents,
         attachAllDocuments: true,
     });
@@ -383,6 +414,24 @@ async function sendOrderCancelledEmail(orderId, orderRow, reason = null) {
     return sendTypedOrderEmail(orderId, orderRow, 'cancelled', orderCancelledTemplate, {
         reason,
     });
+}
+
+async function collectDocumentsToEmail(orderId, savedDocuments, includeAllOrderDocs) {
+    const docs = dedupeDocumentsByName(
+        (savedDocuments || []).filter(isNewlySavedDocument)
+    );
+
+    if (!includeAllOrderDocs) return docs;
+
+    const seen = new Set(docs.map((doc) => normalizeDocumentTitle(doc.title)));
+    for (const doc of dedupeDocumentsByName(await getOrderDocuments(orderId))) {
+        const nameKey = normalizeDocumentTitle(doc.title);
+        if (!doc.public_url || seen.has(nameKey)) continue;
+        seen.add(nameKey);
+        docs.push(doc);
+    }
+
+    return docs;
 }
 
 async function notifyOrderStatusEmail(
@@ -405,8 +454,13 @@ async function notifyOrderStatusEmail(
             results.push(await sendOrderConfirmedEmail(orderId, orderRow));
         }
 
-        const newDocs = (savedDocuments || []).filter(isNewlySavedDocument);
-        for (const doc of newDocs) {
+        const docsToEmail = await collectDocumentsToEmail(
+            orderId,
+            savedDocuments,
+            isDocumentsState(state)
+        );
+
+        for (const doc of docsToEmail) {
             results.push(await sendSingleDocumentEmail(orderId, orderRow, doc));
         }
 
