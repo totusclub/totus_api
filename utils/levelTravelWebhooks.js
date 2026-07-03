@@ -204,21 +204,12 @@ async function updateOrderFromNotify(orderId, orderRow, eventReference, event, c
   const needDocs = shouldDownloadDocuments(event, changes, pkg);
   const authToken = resolveAuthToken(orderRow);
   const isSingleDocEvent = event === 'documents';
-  const isDocsSent = isDocumentsSentEvent(changes);
   const existingDocCount = needDocs ? await countOrderDocuments(orderId) : 0;
 
-  let downloadDocs = false;
-  if (needDocs) {
-    if (isSingleDocEvent) {
-      // Individual documents event — callback already saved the new file
-      downloadDocs = false;
-    } else if (isDocsSent) {
-      // Bulk download only if nothing saved yet (LT also sends per-document events)
-      downloadDocs = existingDocCount === 0;
-    } else {
-      downloadDocs = true;
-    }
-  }
+  // Individual "documents" events already saved their file from the callback;
+  // for documents_sent (and other states) always bulk-download so the full set
+  // is on disk before the documents email. Duplicates are skipped downstream.
+  const downloadDocs = needDocs && !isSingleDocEvent;
 
   logCallback(LOG_NOTIFY, 'DOCS', 'Download plan', {
     order_id: orderId,
@@ -402,22 +393,52 @@ async function processOrderNotify(body) {
 
       try {
         const { notifyOrderStatusEmail } = require('./orderEmails');
-        const refreshedOrder = await findOrderByLtId(order_id);
-        if (refreshedOrder) {
-          notifyOrderStatusEmail(order_id, refreshedOrder, {
+        let orderForEmail = await findOrderByLtId(order_id);
+
+        if (orderForEmail && isDocumentsSentEvent(changes)) {
+          const {
+            saveAllDocumentsFromOrder,
+            mergeLocalAttachments,
+            getOrderDocuments,
+            applyLocalDocumentUrlsToPackage,
+          } = require('./orderDocuments');
+
+          let refreshedPkg = {};
+          try {
+            refreshedPkg = JSON.parse(orderForEmail.package || '{}');
+          } catch {
+            refreshedPkg = {};
+          }
+
+          const extraSaved = await saveAllDocumentsFromOrder(
+            order_id,
+            refreshedPkg,
+            event_reference
+          );
+          if (extraSaved.length) {
+            savedDocuments = [...savedDocuments, ...extraSaved];
+            refreshedPkg = mergeLocalAttachments(refreshedPkg, extraSaved);
+            const documents = await getOrderDocuments(order_id);
+            refreshedPkg = applyLocalDocumentUrlsToPackage(order_id, refreshedPkg, documents);
+            await db.query('UPDATE orders SET package = ? WHERE order_id = ?', [
+              JSON.stringify(refreshedPkg),
+              order_id,
+            ]);
+            orderForEmail = await findOrderByLtId(order_id);
+          }
+        }
+
+        if (orderForEmail) {
+          await notifyOrderStatusEmail(order_id, orderForEmail, {
             newState,
             event,
             message,
             savedDocuments,
-          }).catch((err) => {
-            logCallbackError(LOG_NOTIFY, 'EMAIL', 'Order status email failed', {
-              order_id,
-              error: err.message,
-            });
+            eventReference: event_reference,
           });
         }
       } catch (emailErr) {
-        logCallbackError(LOG_NOTIFY, 'EMAIL', 'Order status email setup failed', {
+        logCallbackError(LOG_NOTIFY, 'EMAIL', 'Order status email failed', {
           order_id,
           error: emailErr.message,
         });
