@@ -315,7 +315,11 @@ app.get('/hotels-rooms', async (req, res) => {
     try {
         const {
             request_id,
-            hotel_id
+            hotel_id,
+            meals,
+            confirmability,
+            free_cancel,
+            operators,
         } = req.query;
 
         if (!request_id) {
@@ -324,7 +328,11 @@ app.get('/hotels-rooms', async (req, res) => {
 
         const params = {
             request_id,
-            hotel_id
+            hotel_id,
+            ...(meals && { meals }),
+            ...(confirmability && { confirmability }),
+            ...(free_cancel !== undefined && free_cancel !== '' && { free_cancel }),
+            ...(operators && { operators }),
         };
 
 
