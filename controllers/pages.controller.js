@@ -1,4 +1,5 @@
 const db = require('../db');
+const { isAllowedCmsPageSlug } = require('../config/cmsPages');
 
 const PAGE_FIELDS = [
     'name',
@@ -30,11 +31,11 @@ function mapPageRow(row) {
     };
 }
 
-// Get all pages
+// Get all pages (admin — footer pages only)
 exports.getAllPages = async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM pages ORDER BY name ASC');
-        res.json(rows.map(mapPageRow));
+        res.json(rows.map(mapPageRow).filter((row) => isAllowedCmsPageSlug(row.slug)));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -58,6 +59,9 @@ exports.getPageById = async (req, res) => {
 // Get a single page by slug (public + admin)
 exports.getPageBySlug = async (req, res) => {
     const { slug } = req.params;
+    if (!isAllowedCmsPageSlug(slug)) {
+        return res.status(404).json({ error: 'Page not found' });
+    }
     try {
         const [rows] = await db.query('SELECT * FROM pages WHERE slug = ? LIMIT 1', [slug]);
         if (rows.length === 0) return res.status(404).json({ error: 'Page not found' });
@@ -70,6 +74,9 @@ exports.getPageBySlug = async (req, res) => {
 // Create a new page
 exports.createPage = async (req, res) => {
     const body = req.body || {};
+    if (!isAllowedCmsPageSlug(body.slug)) {
+        return res.status(403).json({ error: 'This page cannot be edited via CMS' });
+    }
     const values = PAGE_FIELDS.map((field) => body[field] ?? (field === 'section' ? 'company' : ''));
     try {
         const [result] = await db.query(
@@ -91,6 +98,9 @@ exports.updatePage = async (req, res) => {
     const body = req.body || {};
     const { id } = body;
     if (!id) return res.status(400).json({ error: 'Missing page id' });
+    if (!isAllowedCmsPageSlug(body.slug)) {
+        return res.status(403).json({ error: 'This page cannot be edited via CMS' });
+    }
 
     const values = PAGE_FIELDS.map((field) => body[field] ?? (field === 'section' ? 'company' : ''));
     values.push(id);
@@ -113,6 +123,9 @@ exports.savePage = async (req, res) => {
     const body = req.body || {};
     const slug = String(body.slug || '').trim();
     if (!slug) return res.status(400).json({ error: 'Missing slug' });
+    if (!isAllowedCmsPageSlug(slug)) {
+        return res.status(403).json({ error: 'This page cannot be edited via CMS' });
+    }
 
     const values = PAGE_FIELDS.map((field) => {
         if (field === 'slug') return slug;
