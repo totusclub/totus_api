@@ -1,4 +1,5 @@
 require('dotenv').config();
+require('dotenv').config({ path: '.env.local', override: true });
 const express = require('express');
 const https = require('https');
 const axios = require('axios');
@@ -12,6 +13,13 @@ const faqRoutes = require('./routes/faq.routes');
 const popularRoutes = require('./routes/popular.routes');
 const contentRoutes = require('./routes/content.routes');
 const pagesRoutes = require('./routes/pages.routes');
+const { router: callbackRequestsRoutes, adminRouter: callbackRequestsAdminRoutes } = require('./routes/callbackRequests.routes');
+const { publicRouter: homeBannersPublicRoutes, adminRouter: homeBannersAdminRoutes } = require('./routes/homeBanners.routes');
+const { publicRouter: homePartnersPublicRoutes, adminRouter: homePartnersAdminRoutes } = require('./routes/homePartners.routes');
+const { publicRouter: homeHeroPublicRoutes, adminRouter: homeHeroAdminRoutes } = require('./routes/homeHero.routes');
+const { publicRouter: homeContentPublicRoutes, adminRouter: homeContentAdminRoutes } = require('./routes/homeContent.routes');
+const { publicRouter: footerSocialPublicRoutes, adminRouter: footerSocialAdminRoutes } = require('./routes/footerSocial.routes');
+const homeContentController = require('./controllers/homeContent.controller');
 const emailRoutes = require('./routes/email.routes');
 const db = require("./db");
 const crypto = require('crypto');
@@ -233,6 +241,68 @@ app.get('/packages/actualize', async (req, res) => {
     }
 });
 
+app.post('/orders/prebuild', async (req, res) => {
+    try {
+        const response = await axios.post(`${BASE_URL}/orders/prebuild`, req.body, {
+            headers: HEADERS,
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Order prebuild error:', error.response?.data || error.message);
+        res.status(error.response?.status || 500).json({
+            success: false,
+            error: error.response?.data || error.message,
+        });
+    }
+});
+
+app.post('/packages/prebook', async (req, res) => {
+    try {
+        // Docs require accept v3.8; some partner tokens only expose older Accepts.
+        // Try 3.8 then fall back to project default (3.7).
+        let response;
+        try {
+            response = await axios.post(`${BASE_URL}/packages/prebook`, req.body, {
+                headers: HEADERS_3_8,
+            });
+        } catch (firstError) {
+            const firstMsg =
+                firstError.response?.data?.error ||
+                firstError.response?.data?.message ||
+                '';
+            const isVersionError =
+                String(firstMsg).toLowerCase().includes('incorrect api version') ||
+                String(firstMsg).toLowerCase().includes('api version');
+
+            if (!isVersionError) {
+                throw firstError;
+            }
+
+            console.warn('Package prebook v3.8 rejected, retrying with v3.7:', firstMsg);
+            response = await axios.post(`${BASE_URL}/packages/prebook`, req.body, {
+                headers: HEADERS,
+            });
+        }
+
+        res.json(response.data);
+    } catch (error) {
+        console.error('Package prebook error:', error.response?.data || error.message);
+        const ltError = error.response?.data;
+        res.status(error.response?.status || 500).json({
+            success: false,
+            error: ltError?.error || ltError || error.message,
+            errors: ltError?.errors || [],
+            skippable:
+                String(ltError?.error || '')
+                    .toLowerCase()
+                    .includes('incorrect api version') ||
+                String(ltError?.error || '')
+                    .toLowerCase()
+                    .includes('api version'),
+        });
+    }
+});
+
 
 app.get('/search-status', async (req, res) => {
     try {
@@ -415,7 +485,7 @@ app.post('/vtb/create-order', async (req, res) => {
             orderName,
             amount,
             paymentPurpose: paymentPurpose || purposeText,
-            paymentMinutes: 15,
+            paymentMinutes: 30,
             sendEmail: true,
         });
 
@@ -458,35 +528,67 @@ app.post('/create-package', async (req, res) => {
             "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d447"
         };
 
+        const buyerEmail =
+            payload?.client?.email ||
+            payload?.email ||
+            null;
+        const buyerPhoneDigits = String(
+            payload?.client?.phone ||
+            payload?.phone ||
+            '',
+        ).replace(/\D/g, '');
+        const buyerName = payload?.client?.name || '';
+        const buyerSurname = payload?.client?.surname || '';
+        const buyerComment =
+            payload?.comment ||
+            [buyerEmail, buyerPhoneDigits, buyerName, buyerSurname].filter(Boolean).join(';');
+
         let params = {
             client: {
-                id: "3003047",
-                name: "Туртест",
-                surname: "Арлекино",
-                email: "arlekinotour_test@level.travel",
-                phone: "7972988888",
-                ...(payload?.client || {}),
+                name: buyerName || 'Покупатель',
+                surname: buyerSurname || '',
+                email: buyerEmail,
+                phone: buyerPhoneDigits,
+                bonus_score: payload?.client?.bonus_score ?? 0,
+                ...(payload?.client?.id ? { id: payload.client.id } : {}),
             },
-            package_id:payload?.package_id,
-            tourists:payload?.tourists,
-            flight_pair_id:payload.flight_pair_id,
-            payment_option: "card",
-            selected_extras:[],
-            source:'desktop',
-            comment: payload?.comment || "yafob30749@lhory.com;7920998299;Дмитрий;Васильков"
+            package_id: payload?.package_id,
+            tourists: payload?.tourists,
+            flight_pair_id: payload.flight_pair_id,
+            payment_option: payload?.payment_option || 'card',
+            selected_extras: payload?.selected_extras || [],
+            source: 'desktop',
+            comment: buyerComment,
+            ...(payload?.booking_id ? { booking_id: payload.booking_id } : {}),
+        };
+
+        if (!params.client.email || !params.client.phone) {
+            return res.status(400).json({
+                success: false,
+                error: 'Buyer email and phone are required',
+            });
         }
 
-        console.log('params',params)
+        console.log('params', params);
 
         const response = await axios.post(`${BASE_URL}/orders/create`, params,
             { headers }
         );
         if(response.data.success){
             let order_id = response.data.order.id;
-            let orderData = { ...response.data.order };
-            const authToken = String(payload.auth_token || '').trim() || null;
+            const { normalizeOrderPayFields, resolveLtOrderPayAmount } = require('./utils/orderPayment');
+            let orderData = normalizeOrderPayFields({ ...response.data.order });
+            const authToken =
+                String(
+                    response.data.order?.auth_token ||
+                    response.data.auth_token ||
+                    response.data.order?.client?.auth_token ||
+                    payload.auth_token ||
+                    '',
+                ).trim() || null;
             if (authToken) {
                 orderData._lt_auth_token = authToken;
+                orderData.auth_token = authToken;
             }
 
             const customerEmail =
@@ -494,6 +596,11 @@ app.post('/create-package', async (req, res) => {
                 payload?.client?.email ||
                 payload?.tourists?.find?.((item) => item?.email)?.email ||
                 params.client?.email ||
+                null;
+            const customerPhone =
+                payload?.phone ||
+                payload?.client?.phone ||
+                params.client?.phone ||
                 null;
             const customerName =
                 payload?.name ||
@@ -503,9 +610,22 @@ app.post('/create-package', async (req, res) => {
             if (customerEmail) {
                 orderData._customer_email = customerEmail;
             }
+            if (customerPhone) {
+                orderData._customer_phone = String(customerPhone).replace(/\D/g, '');
+            }
             if (customerName) {
                 orderData._customer_name = customerName;
             }
+
+            // Keep buyer client block for checkout display
+            orderData.client = {
+                ...(orderData.client || {}),
+                ...(payload?.client || {}),
+                email: customerEmail || orderData.client?.email || params.client?.email,
+                phone: customerPhone || orderData.client?.phone || params.client?.phone,
+                name: payload?.client?.name || orderData.client?.name || params.client?.name,
+                surname: payload?.client?.surname || orderData.client?.surname || params.client?.surname,
+            };
 
             let package = JSON.stringify(orderData);
             let user_id = payload.user_id;
@@ -524,6 +644,8 @@ app.post('/create-package', async (req, res) => {
             const paymentAmount =
                 payload?.amount ||
                 payload?.payment?.amount ||
+                resolveLtOrderPayAmount(orderData) ||
+                orderData?.full_price ||
                 orderData?.price ||
                 orderData?.total_price ||
                 orderData?.amount ||
@@ -538,7 +660,7 @@ app.post('/create-package', async (req, res) => {
                         payUrl: payload.payUrl,
                         qrcId: payload?.qrcId || null,
                         amount: normalizedAmount?.value,
-                        paymentMinutes: 15,
+                        paymentMinutes: 30,
                     });
 
                     const [rows] = await db.query(
@@ -550,7 +672,7 @@ app.post('/create-package', async (req, res) => {
                         sendOrderCreatedEmail(order_id, rows[0], {
                             payUrl: payload.payUrl,
                             amount: normalizedAmount?.value,
-                            paymentMinutes: 15,
+                            paymentMinutes: 30,
                         }).catch((err) => {
                             console.error('[ORDER_EMAIL] create-package payUrl:', err.message);
                         });
@@ -565,7 +687,7 @@ app.post('/create-package', async (req, res) => {
                     orderName: payload?.orderName || `ORDER${order_id}`,
                     amount: paymentAmount,
                     paymentPurpose: payload?.paymentPurpose || payload?.purposeText,
-                    paymentMinutes: 15,
+                    paymentMinutes: 30,
                     sendEmail: true,
                 }).catch((err) => {
                     console.error('[ORDER_EMAIL] create-package auto-payment:', err.message);
@@ -733,15 +855,92 @@ app.post('/client/orders/:order_id/sync', async (req, res) => {
 
 app.get('/orders', async (req, res) => {
     try {
-        const [orders] = await db.query('SELECT * FROM orders WHERE order_id = ?', [req.query.order_id]);
-        if (!orders[0]) {
-            return res.status(404).json({ error: 'Order not found' });
+        const orderId = String(req.query.order_id || '').replace(/^ORDER/i, '').trim();
+        if (!orderId) {
+            return res.status(400).json({ error: 'Missing order_id' });
         }
 
-        const { prepareOrderRowForClient } = require('./utils/orderDocuments');
         const { attachPaymentToOrderResponse } = require('./utils/orderPayment');
-        const order = await prepareOrderRowForClient(orders[0]);
-        res.json(attachPaymentToOrderResponse(orders[0], order));
+        const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const {
+            fetchClientOrderRaw,
+            resolveAuthToken,
+        } = require('./utils/levelTravelClientOrder');
+
+        // Load DB row only for auth_token + local payment metadata (not as source of tour data)
+        const [rows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
+        const orderRow = rows[0] || null;
+
+        let ltOrder = null;
+        let ltSource = null;
+
+        // 1) Prefer Level Travel partner order endpoint
+        try {
+            const partnerRes = await axios.get(`${BASE_URL}/orders/${orderId}`, {
+                headers: HEADERS,
+                timeout: 60000,
+            });
+            const data = partnerRes.data;
+            ltOrder =
+                data?.order ||
+                (data?.success && data?.package ? data : null) ||
+                (data?.id ? data : null);
+            if (ltOrder) ltSource = 'partner_orders';
+        } catch (partnerErr) {
+            console.warn(
+                'LT partner GET /orders/:id failed:',
+                partnerErr.response?.data || partnerErr.message,
+            );
+        }
+
+        // 2) Fallback: LT client/orders with auth_token
+        if (!ltOrder) {
+            const authToken = resolveAuthToken(orderRow, req.query.auth_token);
+            if (authToken) {
+                try {
+                    const { order } = await fetchClientOrderRaw(orderId, authToken);
+                    if (order) {
+                        ltOrder = order;
+                        ltSource = 'client_orders';
+                    }
+                } catch (clientErr) {
+                    console.warn(
+                        'LT client GET /client/orders/:id failed:',
+                        clientErr.response?.data || clientErr.message,
+                    );
+                }
+            }
+        }
+
+        if (ltOrder) {
+            // Normalize shape expected by checkout: response.package = LT order
+            const packagePayload = {
+                ...ltOrder,
+                // Ensure nested package exists when LT returns flat order
+                package: ltOrder.package || ltOrder,
+                _lt_source: ltSource,
+            };
+
+            const clientOrder = {
+                order_id: orderId,
+                package: packagePayload,
+                pay_status: orderRow?.pay_status || null,
+                transaction_code: orderRow?.transaction_code || null,
+            };
+
+            if (orderRow) {
+                return res.json(attachPaymentToOrderResponse(orderRow, clientOrder));
+            }
+            return res.json(clientOrder);
+        }
+
+        // 3) Last resort: local DB snapshot (old orders / offline)
+        if (!orderRow) {
+            return res.status(404).json({ error: 'Order not found in Level Travel or DB' });
+        }
+
+        const order = await prepareOrderRowForClient(orderRow);
+        res.json(attachPaymentToOrderResponse(orderRow, order));
     } catch (error) {
         console.error('Error orders:', error.message);
         res.status(500).json({ error: 'Failed to get order' });
@@ -781,6 +980,8 @@ app.get('/orders/:order_id/payment', async (req, res) => {
                 const amount =
                     normalizeAmount(req.query.amount) ||
                     normalizeAmount(pkg._pay_amount) ||
+                    normalizeAmount(require('./utils/orderPayment').resolveLtOrderPayAmount(pkg)) ||
+                    normalizeAmount(pkg.full_price) ||
                     normalizeAmount(pkg.price) ||
                     normalizeAmount(pkg.total_price) ||
                     normalizeAmount(pkg.amount);
@@ -791,7 +992,7 @@ app.get('/orders/:order_id/payment', async (req, res) => {
                         orderName: req.query.orderName || `ORDER${req.params.order_id}`,
                         amount,
                         paymentPurpose: req.query.paymentPurpose,
-                        paymentMinutes: 15,
+                        paymentMinutes: 30,
                         sendEmail: false,
                     });
                     payment = await getOrderPayment(req.params.order_id);
@@ -837,81 +1038,7 @@ app.get('/user/orders', async (req, res) => {
 });
 
 
-app.get('/home/data', async (req, res) => {
-    try {
-        const data = {
-            recomendHotels:[
-                {
-                    id:9149847,
-                    name:'Swissotel Sharm El Sheikh Managed By Rixos',
-                    rate:5,
-                    city:'Наама Бэй, Шарм-эль-Шейх',
-                    image:'https://img.cdn.level.travel/hotels/9149847/def8891aa911a636e350e8438d9437ba_webp_x620.webp',
-                },
-                {
-                    id:9085039,
-                    name:'Cosmos Collection Altay Resort',
-                    rate:5,
-                    city:'Урлу-Аспак, Майминский район',
-                    image:'https://img.cdn.level.travel/hotels/9085039/f58b3c014000931c90910baa6298598d_webp_x620.webp',
-
-                },
-                {
-                    id:9022465,
-                    name:'Rixos Premium Seagate',
-                    rate:5,
-                    city:'Шарм-эль-Шейх',
-                    image:'https://img.cdn.level.travel/hotels/9022465/2bc6112958c15dd0d888b039bf10c3ee_webp_x620.webp',
-                },
-
-            ],
-            popularDestinations:[
-                {
-                    id: 1,
-                    name: 'Египет',
-                    image: 'https://api.totus.club/upload/home/egypt.png',
-                    to_country:'EG'
-                },
-                {
-                    id: 2,
-                    name: 'Турция',
-                    image: 'https://api.totus.club/upload/home/turky.png',
-                    to_country:'TR',
-                },
-                {
-                    id: 2,
-                    name: 'Россия',
-                    image: 'https://api.totus.club/upload/home/russon.png',
-                    to_country:'RU',
-                },
-                {
-                    id: 2,
-                    name: 'Мальдивы',
-                    image: 'https://api.totus.club/upload/home/maldiv.png',
-                    to_country:'MV',
-                },
-                {
-                    id: 2,
-                    name: 'ОАЭ',
-                    image: 'https://api.totus.club/upload/home/oae.png',
-                    to_country:'AE',
-                },
-                {
-                    id: 2,
-                    name: 'Индонезия',
-                    image: 'https://api.totus.club/upload/home/indonezia.png',
-                    to_country:'ID',
-                },
-            ]
-        }
-        res.json(data);
-    } catch (error) {
-
-        // console.log({...error.message})
-        console.error('Error starting  :', error.message);
-        res.status(500).json({ error: 'Failed to start search' });
-    }
-});
+app.get('/home/data', homeContentController.getHomeData);
 
 function isVtbSbpPaid(info) {
     const state = String(info?.state || info?.data?.state || "").toUpperCase();
@@ -1282,6 +1409,19 @@ app.use('/api/admin', popularRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/pages', require('./routes/publicPages.routes'));
 app.use('/api/admin/pages', pagesRoutes);
+app.use('/api/callback-requests', callbackRequestsRoutes);
+app.use('/api/admin', callbackRequestsAdminRoutes);
+app.use('/api', homeBannersPublicRoutes);
+app.use('/api/admin', homeBannersAdminRoutes);
+app.use('/api', homePartnersPublicRoutes);
+app.use('/api/admin', homePartnersAdminRoutes);
+app.use('/api', homeHeroPublicRoutes);
+app.use('/api/admin', homeHeroAdminRoutes);
+app.use('/api', homeContentPublicRoutes);
+app.use('/api/admin', homeContentAdminRoutes);
+app.use('/api', footerSocialPublicRoutes);
+app.use('/api/admin', footerSocialAdminRoutes);
+app.use('/api', require('./routes/publicFaq.routes'));
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Level Travel proxy API running on port ${PORT}`);

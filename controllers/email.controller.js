@@ -48,7 +48,7 @@ function buildTemplate(template, options = {}) {
         reason = 'Туроператор отменил бронирование',
         payUrl = 'https://qr.nspk.ru/sample-payment-link',
         amount = 125000,
-        paymentMinutes = 15,
+        paymentMinutes = 30,
         documents = [
             {
                 title: 'Договор.pdf',

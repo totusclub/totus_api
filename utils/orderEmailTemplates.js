@@ -70,7 +70,7 @@ function formatRubles(amount) {
     }).format(value);
 }
 
-function paymentNoticeBlock({ amount, paymentMinutes = 15 }) {
+function paymentNoticeBlock({ amount, paymentMinutes = 30 }) {
     const formattedAmount = formatRubles(amount);
     return `
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;background:#fff8f3;border:1px solid #ffe2cc;border-radius:14px;">
@@ -86,7 +86,7 @@ function paymentNoticeBlock({ amount, paymentMinutes = 15 }) {
       </table>`;
 }
 
-function orderCreatedTemplate({ name, orderId, details, payUrl, amount, paymentMinutes = 15 }) {
+function orderCreatedTemplate({ name, orderId, details, payUrl, amount, paymentMinutes = 30 }) {
     const formattedAmount = formatRubles(amount);
     const payButton = payUrl
         ? ctaButton('Оплатить через СБП', payUrl)

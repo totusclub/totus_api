@@ -1,12 +1,5 @@
 const path = require('path');
-
-function getPublicApiBase(req) {
-    return (
-        process.env.API_PUBLIC_URL ||
-        process.env.PUBLIC_API_URL ||
-        `${req.protocol}://${req.get('host')}`
-    );
-}
+const { getPublicApiBase } = require('../utils/publicApiBase');
 
 exports.uploadImage = (req, res) => {
     const file = req.file;

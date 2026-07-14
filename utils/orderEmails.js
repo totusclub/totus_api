@@ -356,7 +356,7 @@ async function sendTypedOrderEmail(orderId, orderRow, emailType, buildTemplate, 
     }
 }
 
-async function sendOrderCreatedEmail(orderId, orderRow, { payUrl, amount, paymentMinutes = 15 } = {}) {
+async function sendOrderCreatedEmail(orderId, orderRow, { payUrl, amount, paymentMinutes = 30 } = {}) {
     const emailType = payUrl ? 'created_payment' : 'created';
     return sendTypedOrderEmail(orderId, orderRow, emailType, orderCreatedTemplate, {
         payUrl,

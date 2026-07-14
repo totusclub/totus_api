@@ -47,7 +47,7 @@ async function createVtbPaymentForOrder({
     amount,
     paymentPurpose,
     purposeText,
-    paymentMinutes = 15,
+    paymentMinutes = 30,
     sendEmail = true,
 }) {
     const normalizedAmount = normalizeAmount(amount);

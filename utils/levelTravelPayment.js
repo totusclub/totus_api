@@ -34,7 +34,15 @@ async function resolveAmountFromDb(orderId) {
 
   try {
     const pkg = JSON.parse(rows[0].package);
-    return pkg.paid_amount ?? pkg.price ?? pkg.full_price ?? pkg.remaining_amount ?? null;
+    const { resolveLtOrderPayAmount } = require('./orderPayment');
+    return (
+      resolveLtOrderPayAmount(pkg) ??
+      pkg.paid_amount ??
+      pkg.full_price ??
+      pkg.remaining_amount ??
+      pkg.price ??
+      null
+    );
   } catch {
     return null;
   }
