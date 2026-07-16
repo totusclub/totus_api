@@ -1116,7 +1116,7 @@ app.post('/check_pay', async (req, res) => {
         };
 
         const vtbResponse = await axios.post(
-            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics",
+            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics/info",
             { qrcId },
             { headers, ...vtbAxiosConfig }
         );
@@ -1235,8 +1235,9 @@ app.post('/check_pay', async (req, res) => {
             message: "Failed to check payment status",
             notify_status: null,
             notify_result: null,
-            notify_data: null,
-            notify_error: err.message,
+            notify_data: err.response?.data || null,
+            notify_error: err.response?.data?.message || err.message,
+            vtb_status: err.response?.status || null,
         });
     }
 });
