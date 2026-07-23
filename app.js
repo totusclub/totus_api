@@ -569,7 +569,6 @@ app.post('/create-package', async (req, res) => {
             });
         }
 
-        console.log('params', params);
 
         const response = await axios.post(`${BASE_URL}/orders/create`, params,
             { headers }
