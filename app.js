@@ -35,33 +35,48 @@ app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')
 app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));
 
 const BASE_URL = 'https://api.level.travel';
-const HEADERS = {
-    Accept: 'application/vnd.leveltravel.v3.7',
-    Authorization: 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
-    'Content-Type': 'application/json'
-};
-const HEADERS_3_8 = {
-    Accept: 'application/vnd.leveltravel.v3.8',
-    Authorization: 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
-    'Content-Type': 'application/json'
-};
+const {
+    getLtHeaders,
+    ltRequest,
+    logLtError,
+    sendLtAxiosError,
+} = require('./utils/levelTravelHttp');
+
+const HEADERS = getLtHeaders('3.7');
+const HEADERS_3_8 = getLtHeaders('3.8');
+const HEADERS_3_4 = getLtHeaders('3.4');
 const LT_API_TOKEN = process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
-const HEADERS_3_4 = {
-    Accept: 'application/vnd.leveltravel.v3.4',
-    Authorization: `Token token="${LT_API_TOKEN}"`,
-    'Content-Type': 'application/json',
-};
+
+// Short in-memory cache so intermittent LT 5xx don't blank the search form.
+let departuresCache = { at: 0, query: null, data: null };
+const DEPARTURES_CACHE_MS = 5 * 60 * 1000;
 
 app.get('/references/departures', async (req, res) => {
     try {
-        const response = await axios.get(`${BASE_URL}/references/departures`, {
+        const response = await ltRequest({
+            method: 'get',
+            path: '/references/departures',
             params: req.query,
-            headers: HEADERS,
+            versions: ['3.7', '3.8', '3.4', '3.0'],
+            retries: 1,
+            timeout: 20000,
         });
+        departuresCache = {
+            at: Date.now(),
+            query: JSON.stringify(req.query || {}),
+            data: response.data,
+        };
         res.json(response.data);
     } catch (error) {
-        console.error('Error departures:', error.message);
-        res.status(500).json({ error: 'Failed departures' });
+        logLtError('Error departures:', error, { query: req.query });
+        const cacheFresh =
+            departuresCache.data &&
+            Date.now() - departuresCache.at < DEPARTURES_CACHE_MS;
+        if (cacheFresh) {
+            console.warn('Error departures: serving cached response');
+            return res.json(departuresCache.data);
+        }
+        return sendLtAxiosError(res, error, 'Failed departures');
     }
 });
 
@@ -258,47 +273,32 @@ app.post('/orders/prebuild', async (req, res) => {
 
 app.post('/packages/prebook', async (req, res) => {
     try {
-        // Docs require accept v3.8; some partner tokens only expose older Accepts.
-        // Try 3.8 then fall back to project default (3.7).
-        let response;
-        try {
-            response = await axios.post(`${BASE_URL}/packages/prebook`, req.body, {
-                headers: HEADERS_3_8,
-            });
-        } catch (firstError) {
-            const firstMsg =
-                firstError.response?.data?.error ||
-                firstError.response?.data?.message ||
-                '';
-            const isVersionError =
-                String(firstMsg).toLowerCase().includes('incorrect api version') ||
-                String(firstMsg).toLowerCase().includes('api version');
-
-            if (!isVersionError) {
-                throw firstError;
-            }
-
-            console.warn('Package prebook v3.8 rejected, retrying with v3.7:', firstMsg);
-            response = await axios.post(`${BASE_URL}/packages/prebook`, req.body, {
-                headers: HEADERS,
-            });
-        }
-
+        // Try newest Accept first; fall through only on "Incorrect api version".
+        const response = await ltRequest({
+            method: 'post',
+            path: '/packages/prebook',
+            data: req.body,
+            versions: ['3.8', '3.7', '3.6', '3.5', '3.4'],
+            retries: 0,
+            timeout: 60000,
+        });
         res.json(response.data);
     } catch (error) {
-        console.error('Package prebook error:', error.response?.data || error.message);
+        logLtError('Package prebook error:', error);
         const ltError = error.response?.data;
-        res.status(error.response?.status || 500).json({
+        const msg = String(ltError?.error || ltError?.message || error.message || '');
+        const skippable =
+            msg.toLowerCase().includes('incorrect api version') ||
+            msg.toLowerCase().includes('api version');
+        const status = error.response?.status || 500;
+        if (ltError && typeof ltError === 'object') {
+            return res.status(status).json({ ...ltError, skippable });
+        }
+        return res.status(status).json({
             success: false,
-            error: ltError?.error || ltError || error.message,
-            errors: ltError?.errors || [],
-            skippable:
-                String(ltError?.error || '')
-                    .toLowerCase()
-                    .includes('incorrect api version') ||
-                String(ltError?.error || '')
-                    .toLowerCase()
-                    .includes('api version'),
+            error: msg || 'Package prebook failed',
+            errors: [],
+            skippable,
         });
     }
 });
@@ -376,8 +376,8 @@ app.get('/grouped-hotels', async (req, res) => {
 
         res.json(response.data);
     } catch (error) {
-        console.error('Error getting grouped hotels:', error.message);
-        res.status(500).json({ error: 'Failed to get grouped hotels' });
+        logLtError('Error getting grouped hotels:', error, { query: req.query });
+        return sendLtAxiosError(res, error, 'Failed to get grouped hotels');
     }
 });
 
@@ -413,8 +413,8 @@ app.get('/hotels-rooms', async (req, res) => {
 
         res.json(response.data);
     } catch (error) {
-        console.error('Error getting grouped hotels rooms:', error.message);
-        res.status(500).json({ error: 'Failed to get grouped hotels' });
+        logLtError('Error getting grouped hotels rooms:', error, { query: req.query });
+        return sendLtAxiosError(res, error, 'Failed to get hotel rooms');
     }
 });
 
@@ -452,13 +452,18 @@ app.get('/get-hotel-offers', async (req, res) => {
 
 app.post('/packages/flights', async (req, res) => {
     try {
-        const response = await axios.post(`${BASE_URL}/packages/flights`, req.body, {
-            headers: HEADERS_3_8,
+        const response = await ltRequest({
+            method: 'post',
+            path: '/packages/flights',
+            data: req.body,
+            versions: ['3.8', '3.7', '3.4'],
+            retries: 0,
+            timeout: 60000,
         });
         res.json(response.data);
     } catch (error) {
-        console.error('Error flights  :', error.message);
-        res.status(500).json({ error: 'Failed to start search' });
+        logLtError('Error flights:', error);
+        return sendLtAxiosError(res, error, 'Failed to get flights');
     }
 });
 
@@ -768,7 +773,13 @@ app.get('/client/orders', async (req, res) => {
         const sanitized = await sanitizeLtApiPayloadForClient(null, raw);
         return res.status(status || 200).json(sanitized);
     } catch (error) {
-        console.error('LT client orders list error:', error.response?.data || error.message);
+        const msg = String(error.response?.data?.error || error.message || '');
+        if (msg.includes('client_not_found')) {
+            // Invalid/expired LT client auth — common, keep logs quiet.
+            console.warn('LT client orders list: client_not_found');
+        } else {
+            logLtError('LT client orders list error:', error);
+        }
         const { formatLtClientError } = require('./utils/levelTravelClientOrder');
         const formatted = formatLtClientError(error);
         return res.status(formatted.status).json(formatted.body);
@@ -897,6 +908,7 @@ app.get('/orders', async (req, res) => {
 
         const { attachPaymentToOrderResponse } = require('./utils/orderPayment');
         const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const { getLatestLtEvent } = require('./utils/clientOrders');
         const {
             fetchClientOrderRaw,
             resolveAuthToken,
@@ -905,30 +917,15 @@ app.get('/orders', async (req, res) => {
         // Load DB row only for auth_token + local payment metadata (not as source of tour data)
         const [rows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
         const orderRow = rows[0] || null;
+        const lastLtEvent = await getLatestLtEvent(orderId);
 
         let ltOrder = null;
         let ltSource = null;
 
-        // 1) Prefer Level Travel partner order endpoint
-        try {
-            const partnerRes = await axios.get(`${BASE_URL}/orders/${orderId}`, {
-                headers: HEADERS,
-                timeout: 60000,
-            });
-            const data = partnerRes.data;
-            ltOrder =
-                data?.order ||
-                (data?.success && data?.package ? data : null) ||
-                (data?.id ? data : null);
-            if (ltOrder) ltSource = 'partner_orders';
-        } catch (partnerErr) {
-            console.warn(
-                'LT partner GET /orders/:id failed:',
-                partnerErr.response?.data || partnerErr.message,
-            );
-        }
+        // Partner GET /orders/:id always returns 405 (method not allowed) — skip it.
+        // Prefer client API when auth_token exists, otherwise DB snapshot.
 
-        // 2) Fallback: LT client/orders with auth_token
+        // 1) LT client/orders with auth_token
         if (!ltOrder) {
             const authToken = resolveAuthToken(orderRow, req.query.auth_token);
             if (authToken) {
@@ -939,10 +936,19 @@ app.get('/orders', async (req, res) => {
                         ltSource = 'client_orders';
                     }
                 } catch (clientErr) {
-                    console.warn(
-                        'LT client GET /client/orders/:id failed:',
-                        clientErr.response?.data || clientErr.message,
+                    const clientMsg = String(
+                        clientErr.response?.data?.error || clientErr.message || '',
                     );
+                    if (clientMsg.includes('Order not found') || clientMsg.includes('не найден')) {
+                        console.warn(
+                            'LT client GET /client/orders/:id: order not found',
+                            { order_id: orderId },
+                        );
+                    } else {
+                        logLtError('LT client GET /client/orders/:id failed:', clientErr, {
+                            order_id: orderId,
+                        });
+                    }
                 }
             }
         }
@@ -961,6 +967,8 @@ app.get('/orders', async (req, res) => {
                 package: packagePayload,
                 pay_status: orderRow?.pay_status || null,
                 transaction_code: orderRow?.transaction_code || null,
+                order_state: orderRow?.order_state || null,
+                last_lt_event: lastLtEvent,
             };
 
             if (orderRow) {
@@ -975,7 +983,10 @@ app.get('/orders', async (req, res) => {
         }
 
         const order = await prepareOrderRowForClient(orderRow);
-        res.json(attachPaymentToOrderResponse(orderRow, order));
+        res.json({
+            ...attachPaymentToOrderResponse(orderRow, order),
+            last_lt_event: lastLtEvent,
+        });
     } catch (error) {
         console.error('Error orders:', error.message);
         res.status(500).json({ error: 'Failed to get order' });
@@ -1061,14 +1072,25 @@ app.get('/user/orders', async (req, res) => {
     try {
         const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [req.query.user_id]);
         const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const { getLatestLtEventsByOrderIds } = require('./utils/clientOrders');
+
         const parsedOrders = await Promise.all(
             orders.map((order) => prepareOrderRowForClient(order))
         );
 
-        res.json(parsedOrders);
+        const latestByOrderId = await getLatestLtEventsByOrderIds(
+            parsedOrders.map((order) => order.order_id)
+        );
+
+        res.json(
+            parsedOrders.map((order) => ({
+                ...order,
+                last_lt_event: latestByOrderId.get(Number(order.order_id)) || null,
+            }))
+        );
     } catch (error) {
-        console.error('Error departures:', error.message);
-        res.status(500).json({ error: 'Failed departures' });
+        console.error('Error user orders:', error.message);
+        res.status(500).json({ error: 'Failed to get user orders' });
     }
 });
 

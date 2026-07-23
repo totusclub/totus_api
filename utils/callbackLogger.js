@@ -29,4 +29,15 @@ function logCallbackError(channel, stage, message, data) {
   }
 }
 
-module.exports = { logCallback, logCallbackError };
+/** Loud terminal banner so callback traffic is obvious while watching logs. */
+function logCallbackBanner(channel, title, data) {
+  const line = '='.repeat(64);
+  console.log(`\n${line}`);
+  console.log(`[${timestamp()}] [${channel}] ${title}`);
+  if (data !== undefined) {
+    console.log(formatData(data));
+  }
+  console.log(`${line}\n`);
+}
+
+module.exports = { logCallback, logCallbackError, logCallbackBanner };

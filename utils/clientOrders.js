@@ -10,25 +10,95 @@ function parseJson(value, fallback = null) {
   }
 }
 
+function mapLtEventRow(row) {
+  const changes = parseJson(row.changes);
+  const state =
+    Array.isArray(changes?.state) && changes.state.length >= 2
+      ? changes.state[1]
+      : null;
+
+  let status = null;
+  if (row.message) {
+    const firstLine = String(row.message)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (firstLine) status = firstLine;
+  }
+  if (!status && state) status = String(state);
+  if (!status && row.event) status = String(row.event);
+
+  return {
+    id: row.id,
+    order_id: row.order_id != null ? Number(row.order_id) : undefined,
+    reference: row.reference,
+    type: row.reference_type,
+    event: row.event,
+    event_timestamp: row.event_timestamp,
+    message: row.message,
+    changes,
+    state,
+    status,
+    created_at: row.created_at,
+  };
+}
+
 async function getOrderHistory(orderId) {
   const [rows] = await db.query(
-    `SELECT id, reference, reference_type, event, event_timestamp, message, changes, created_at
+    `SELECT id, order_id, reference, reference_type, event, event_timestamp, message, changes, created_at
      FROM lt_order_events
      WHERE order_id = ?
      ORDER BY created_at ASC`,
     [orderId]
   );
 
-  return rows.map((row) => ({
-    id: row.id,
-    reference: row.reference,
-    type: row.reference_type,
-    event: row.event,
-    event_timestamp: row.event_timestamp,
-    message: row.message,
-    changes: parseJson(row.changes),
-    created_at: row.created_at,
-  }));
+  return rows.map(mapLtEventRow);
+}
+
+async function getLatestLtEvent(orderId) {
+  const id = Number(orderId);
+  if (!Number.isFinite(id)) return null;
+
+  const [rows] = await db.query(
+    `SELECT id, order_id, reference, reference_type, event, event_timestamp, message, changes, created_at
+     FROM lt_order_events
+     WHERE order_id = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [id]
+  );
+
+  return rows[0] ? mapLtEventRow(rows[0]) : null;
+}
+
+async function getLatestLtEventsByOrderIds(orderIds) {
+  const ids = [...new Set(
+    (orderIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id))
+  )];
+
+  const byOrderId = new Map();
+  if (ids.length === 0) return byOrderId;
+
+  const [rows] = await db.query(
+    `SELECT e.id, e.order_id, e.reference, e.reference_type, e.event,
+            e.event_timestamp, e.message, e.changes, e.created_at
+     FROM lt_order_events e
+     INNER JOIN (
+       SELECT order_id, MAX(id) AS max_id
+       FROM lt_order_events
+       WHERE order_id IN (?)
+       GROUP BY order_id
+     ) latest ON latest.max_id = e.id`,
+    [ids]
+  );
+
+  for (const row of rows) {
+    byOrderId.set(Number(row.order_id), mapLtEventRow(row));
+  }
+
+  return byOrderId;
 }
 
 async function getAllLtCallbackHistory({ order_id, limit = 100, offset = 0 } = {}) {
@@ -79,4 +149,9 @@ async function getAllLtCallbackHistory({ order_id, limit = 100, offset = 0 } = {
   };
 }
 
-module.exports = { getOrderHistory, getAllLtCallbackHistory };
+module.exports = {
+  getOrderHistory,
+  getLatestLtEvent,
+  getLatestLtEventsByOrderIds,
+  getAllLtCallbackHistory,
+};

@@ -6,7 +6,7 @@ const {
   getNewStateFromChanges,
   shouldDownloadDocuments,
 } = require('./levelTravelClientOrder');
-const { logCallback, logCallbackError } = require('./callbackLogger');
+const { logCallback, logCallbackError, logCallbackBanner } = require('./callbackLogger');
 
 const LOG_NOTIFY = 'LT_NOTIFY';
 const LOG_REFUND = 'LT_REFUND';
@@ -19,6 +19,16 @@ function verifyPartnerApiKey(req, res, next) {
   const expected = String(PARTNER_API_KEY || '').trim();
 
   if (!key || key !== expected) {
+    logCallbackBanner(LOG_NOTIFY, '❌ CALLBACK REJECTED — bad/missing Partner-Api-Key', {
+      path: req.originalUrl || req.path,
+      method: req.method,
+      ip: req.ip,
+      has_key: Boolean(key),
+      key_length: key.length,
+      expected_length: expected.length,
+      order_id: req.body?.order_id,
+      event: req.body?.event,
+    });
     logCallbackError(LOG_NOTIFY, 'AUTH', 'Rejected — invalid Partner-Api-Key (nothing saved)', {
       path: req.path,
       has_key: Boolean(key),
@@ -34,15 +44,28 @@ function verifyPartnerApiKey(req, res, next) {
 
 function logLtRequest(channel) {
   return (req, res, next) => {
-    logCallback(channel, 'HTTP_IN', 'Raw request received', {
+    const summary = {
       ip: req.ip,
       method: req.method,
-      path: req.path,
+      path: req.originalUrl || req.path,
       has_partner_key: Boolean(req.headers['partner-api-key']),
       order_id: req.body?.order_id,
       event: req.body?.event,
       event_reference: req.body?.event_reference || req.body?.request_reference,
-    });
+      message:
+        typeof req.body?.message === 'string'
+          ? req.body.message.slice(0, 120)
+          : req.body?.message,
+      state_change: req.body?.changes?.state || null,
+      body_keys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+    };
+
+    logCallbackBanner(
+      channel,
+      '🔔 LEVEL TRAVEL CALLBACK HIT — incoming request',
+      summary,
+    );
+    logCallback(channel, 'HTTP_IN', 'Raw request received', summary);
     next();
   };
 }
@@ -110,6 +133,18 @@ function applyChangesToPackage(pkg, changes, event) {
     delete pkg.description_for_client;
   }
 
+  // Keep client-facing status in sync with callback text when LT sends it.
+  // (notify payload often has `message` on the body, applied by caller.)
+  if (typeof changes.status_for_client === 'string' && changes.status_for_client.trim()) {
+    pkg.status_for_client = changes.status_for_client.trim();
+  } else if (
+    Array.isArray(changes.status_for_client) &&
+    changes.status_for_client.length >= 2 &&
+    changes.status_for_client[1]
+  ) {
+    pkg.status_for_client = String(changes.status_for_client[1]);
+  }
+
   if (Array.isArray(changes.attachments) && changes.attachments.length >= 2) {
     pkg.attachments = changes.attachments[1];
   }
@@ -162,7 +197,14 @@ async function findOrderByLtId(orderId) {
   return rows[0] || null;
 }
 
-async function updateOrderFromNotify(orderId, orderRow, eventReference, event, changes) {
+async function updateOrderFromNotify(
+  orderId,
+  orderRow,
+  eventReference,
+  event,
+  changes,
+  message
+) {
   const {
     saveAttachmentsForOrder,
     saveAllDocumentsFromOrder,
@@ -204,6 +246,21 @@ async function updateOrderFromNotify(orderId, orderRow, eventReference, event, c
   pkg = applyChangesToPackage(pkg, changes, event);
   const newState = getNewStateFromChanges(changes) || pkg.state || null;
   if (newState) pkg.state = newState;
+
+  if (typeof message === 'string' && message.trim()) {
+    const firstLine = message
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (firstLine) {
+      pkg.status_for_client = firstLine;
+    }
+  } else if (newState === 'canceled' || newState === 'cancelled' || newState === 'annulled') {
+    if (!pkg.status_for_client || /подтверж/i.test(String(pkg.status_for_client))) {
+      pkg.status_for_client =
+        newState === 'annulled' ? 'Заказ аннулирован' : 'Заказ отменён';
+    }
+  }
 
   const needDocs = shouldDownloadDocuments(event, changes, pkg);
   const authToken = resolveAuthToken(orderRow);
@@ -384,7 +441,8 @@ async function processOrderNotify(body) {
         order,
         event_reference,
         event,
-        changes
+        changes,
+        message
       );
       newState = orderUpdate.order_state;
       savedDocuments = orderUpdate.saved_documents || [];
@@ -500,6 +558,15 @@ async function processOrderNotify(body) {
     event_log_id: eventLogId,
     order_update_error: orderUpdateError,
   };
+  logCallbackBanner(LOG_NOTIFY, '✅ LT NOTIFY PROCESSED', {
+    success: result.success,
+    order_id,
+    event,
+    order_state: result.order_state,
+    duplicate: result.duplicate,
+    order_found: result.order_found,
+    event_log_id: result.event_log_id,
+  });
   logCallback(LOG_NOTIFY, 'OUT', 'Notify processed', result);
   return result;
 }
@@ -578,6 +645,14 @@ async function processOrderRefund(body) {
     refund_amount: amount,
     event_log_id: eventLogId,
   };
+  logCallbackBanner(LOG_REFUND, '✅ LT REFUND PROCESSED', {
+    success: result.success,
+    order_id,
+    amount: result.refund_amount ?? amount,
+    duplicate: result.duplicate,
+    order_found: result.order_found,
+    event_log_id: result.event_log_id,
+  });
   logCallback(LOG_REFUND, 'OUT', 'Refund processed', result);
   return result;
 }
