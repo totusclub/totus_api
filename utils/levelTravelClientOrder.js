@@ -22,25 +22,28 @@ function resolveAuthToken(orderRow, overrideToken) {
   const explicit = String(overrideToken || '').trim();
   if (explicit) return explicit;
 
-  const envToken = String(process.env.LT_CLIENT_AUTH_TOKEN || '').trim();
-  if (envToken) return envToken;
-
+  // Prefer per-order client token — env token only sees a subset of orders.
   const rowToken = String(orderRow?.lt_auth_token || '').trim();
   if (rowToken) return rowToken;
 
-  if (!orderRow?.package) return null;
-
-  try {
-    const pkg = JSON.parse(orderRow.package);
-    return (
-      pkg._lt_auth_token ||
-      pkg.auth_token ||
-      pkg.client?.auth_token ||
-      null
-    );
-  } catch {
-    return null;
+  if (orderRow?.package) {
+    try {
+      const pkg =
+        typeof orderRow.package === 'string'
+          ? JSON.parse(orderRow.package)
+          : orderRow.package;
+      const pkgToken =
+        pkg?._lt_auth_token || pkg?.auth_token || pkg?.client?.auth_token || null;
+      if (pkgToken) return String(pkgToken).trim();
+    } catch {
+      // ignore parse errors
+    }
   }
+
+  const envToken = String(process.env.LT_CLIENT_AUTH_TOKEN || '').trim();
+  if (envToken) return envToken;
+
+  return null;
 }
 
 function parseLtOrderResponse(data) {
@@ -104,6 +107,119 @@ async function fetchClientOrder(orderId, authToken) {
     agreement_license: Boolean(order.agreement_license),
   });
   return order;
+}
+
+/**
+ * List client orders from Level Travel.
+ * Tries several transport shapes because LT accepts auth_token inconsistently
+ * across GET query / GET body / POST body depending on client.
+ */
+async function fetchClientOrdersList({
+  authToken,
+  pageNumber = '0',
+  pageLimit = '10',
+} = {}) {
+  const token = String(authToken || '').trim();
+  if (!token) {
+    const err = new Error('Missing auth_token');
+    err.status = 400;
+    err.code = 'missing_auth_token';
+    throw err;
+  }
+
+  const payload = {
+    auth_token: token,
+    page_number: String(pageNumber ?? '0'),
+    page_limit: String(pageLimit ?? '10'),
+  };
+
+  logCallback(LOG, 'FETCH', 'GET /client/orders', {
+    page_number: payload.page_number,
+    page_limit: payload.page_limit,
+  });
+
+  const attempts = [
+    () =>
+      axios.get(`${BASE_URL}/client/orders`, {
+        headers: HEADERS_3_4,
+        params: payload,
+        timeout: 60000,
+      }),
+    () =>
+      axios({
+        method: 'GET',
+        url: `${BASE_URL}/client/orders`,
+        headers: HEADERS_3_4,
+        data: payload,
+        timeout: 60000,
+      }),
+    () =>
+      axios.post(`${BASE_URL}/client/orders`, payload, {
+        headers: HEADERS_3_4,
+        timeout: 60000,
+      }),
+  ];
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const response = await attempt();
+      if (response?.data) {
+        return { raw: response.data, status: response.status };
+      }
+      lastError = new Error('Empty response from Level Travel');
+    } catch (err) {
+      lastError = err;
+      const code = err.response?.data?.error || err.response?.data?.errors;
+      // Do not retry other shapes for definitive client errors
+      if (code === 'client_not_found' || (Array.isArray(code) && code.includes('client_not_found'))) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error('Failed to fetch client orders from Level Travel');
+}
+
+function formatLtClientError(error) {
+  const data = error?.response?.data;
+  const status = error?.response?.status || error?.status || 500;
+  const code =
+    data?.error ||
+    (Array.isArray(data?.errors) ? data.errors[0] : null) ||
+    error?.code ||
+    null;
+
+  if (code === 'client_not_found' || error?.code === 'client_not_found') {
+    return {
+      status: status === 500 ? 404 : status,
+      body: {
+        success: false,
+        error: 'client_not_found',
+        errors: ['client_not_found'],
+        hint:
+          'auth_token is not a valid Level Travel client token. Use order.auth_token from /orders/create (stored as orders.lt_auth_token). Partner API key goes only in Authorization header.',
+        origin: data?.origin || 'https://level.travel',
+      },
+    };
+  }
+
+  if (error?.code === 'missing_auth_token' || status === 400) {
+    return {
+      status: 400,
+      body: {
+        success: false,
+        error: 'missing_auth_token',
+        hint:
+          'Pass auth_token query/body from the order create response (orders.lt_auth_token).',
+      },
+    };
+  }
+
+  return {
+    status,
+    body: data || { success: false, error: error.message },
+  };
 }
 
 function getNewStateFromChanges(changes) {
@@ -287,6 +403,8 @@ async function syncOrderFromClient(orderId, authToken, options = {}) {
 module.exports = {
   fetchClientOrder,
   fetchClientOrderRaw,
+  fetchClientOrdersList,
+  formatLtClientError,
   syncOrderFromClient,
   buildPackageFromClientOrder,
   saveOrderPackageToDb,

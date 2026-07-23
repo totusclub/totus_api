@@ -525,7 +525,7 @@ app.post('/create-package', async (req, res) => {
             "accept": "application/vnd.leveltravel.v3.7",
             "authorization": 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
             "Content-Type": "application/json",
-            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d447"
+            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d448"
         };
 
         const buyerEmail =
@@ -729,60 +729,97 @@ app.post('/validate-tourists', async (req, res) => {
 
 
 // Level Travel client orders (proxy to api.level.travel)
+// Requires:
+//   - Partner key is applied server-side via Authorization header
+//   - Client auth_token from order create (orders.lt_auth_token)
 app.get('/client/orders', async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
-        const payload = {
-            auth_token: src.auth_token,
-            page_number: String(src.page_number ?? '0'),
-            page_limit: String(src.page_limit ?? '10'),
-        };
+        const auth_token = String(src.auth_token || '').trim();
 
-        if (!payload.auth_token) {
-            return res.status(400).json({ error: 'Missing auth_token' });
+        if (!auth_token) {
+            return res.status(400).json({
+                success: false,
+                error: 'missing_auth_token',
+                hint:
+                    'Pass ?auth_token=... from order create response (orders.lt_auth_token). Partner API key is added by this proxy automatically.',
+            });
         }
 
-        const response = await axios({
-            method: 'GET',
-            url: `${BASE_URL}/client/orders`,
-            headers: HEADERS_3_4,
-            data: payload,
+        const {
+            fetchClientOrdersList,
+            formatLtClientError,
+        } = require('./utils/levelTravelClientOrder');
+
+        const { raw, status } = await fetchClientOrdersList({
+            authToken: auth_token,
+            pageNumber: src.page_number ?? '0',
+            pageLimit: src.page_limit ?? '10',
         });
 
+        // LT sometimes returns 200 with success:false
+        if (raw && raw.success === false) {
+            const formatted = formatLtClientError({
+                response: { status: status || 404, data: raw },
+            });
+            return res.status(formatted.status).json(formatted.body);
+        }
+
         const { sanitizeLtApiPayloadForClient } = require('./utils/orderDocuments');
-        const sanitized = await sanitizeLtApiPayloadForClient(null, response.data);
-        return res.status(response.status).json(sanitized);
+        const sanitized = await sanitizeLtApiPayloadForClient(null, raw);
+        return res.status(status || 200).json(sanitized);
     } catch (error) {
         console.error('LT client orders list error:', error.response?.data || error.message);
-        if (error.response) {
-            return res.status(error.response.status).json(error.response.data);
-        }
-        return res.status(500).json({ error: error.message });
+        const { formatLtClientError } = require('./utils/levelTravelClientOrder');
+        const formatted = formatLtClientError(error);
+        return res.status(formatted.status).json(formatted.body);
     }
 });
 
 app.get('/client/orders/:order_id', async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
-        const auth_token = src.auth_token;
+        const orderId = Number(req.params.order_id);
         const saveToDb = src.save !== '0' && src.save !== 'false';
 
-        if (!auth_token) {
-            return res.status(400).json({ error: 'Missing auth_token' });
+        if (!Number.isFinite(orderId)) {
+            return res.status(400).json({ success: false, error: 'Invalid order_id' });
         }
 
-        const orderId = Number(req.params.order_id);
         const {
             fetchClientOrderRaw,
             buildPackageFromClientOrder,
             saveOrderPackageToDb,
             loadExistingPackage,
+            resolveAuthToken,
+            formatLtClientError,
         } = require('./utils/levelTravelClientOrder');
 
-        const { raw, order } = await fetchClientOrderRaw(req.params.order_id, auth_token);
+        const [rows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
+        const orderRow = rows[0] || null;
+
+        const auth_token = resolveAuthToken(orderRow, src.auth_token);
+        console.log('auth_token',auth_token)
+        if (!auth_token) {
+            return res.status(400).json({
+                success: false,
+                error: 'missing_auth_token',
+                hint:
+                    'Pass ?auth_token=... or store lt_auth_token on the order when creating it.',
+            });
+        }
+
+        const { raw, order } = await fetchClientOrderRaw(String(orderId), auth_token);
+
+        if (raw && raw.success === false) {
+            const formatted = formatLtClientError({
+                response: { status: 404, data: raw },
+            });
+            return res.status(formatted.status).json(formatted.body);
+        }
 
         let package_updated = false;
-        if (saveToDb && Number.isFinite(orderId)) {
+        if (saveToDb) {
             const existingPkg = await loadExistingPackage(orderId);
             const pkg = buildPackageFromClientOrder(
                 order,
@@ -808,10 +845,9 @@ app.get('/client/orders/:order_id', async (req, res) => {
         return res.status(200).json(sanitized);
     } catch (error) {
         console.error('LT client order by id error:', error.response?.data || error.message);
-        if (error.response) {
-            return res.status(error.response.status).json(error.response.data);
-        }
-        return res.status(500).json({ error: error.message });
+        const { formatLtClientError } = require('./utils/levelTravelClientOrder');
+        const formatted = formatLtClientError(error);
+        return res.status(formatted.status).json(formatted.body);
     }
 });
 

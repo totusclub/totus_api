@@ -104,6 +104,10 @@ function applyChangesToPackage(pkg, changes, event) {
 
   if (Array.isArray(changes.state) && changes.state.length >= 2) {
     pkg.state = changes.state[1];
+    // Drop stale LT client labels — full sync will refill them from LT.
+    delete pkg.status_for_client;
+    delete pkg.header_for_client;
+    delete pkg.description_for_client;
   }
 
   if (Array.isArray(changes.attachments) && changes.attachments.length >= 2) {
