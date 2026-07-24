@@ -227,14 +227,14 @@ function extractDownloadablesFromOrder(order) {
 
   if (order?.agreement_doc) {
     items.push({
-      title: 'agreement_doc.pdf',
+      title: 'Договор оферты.pdf',
       url: normalizeDownloadUrl(order.agreement_doc),
     });
   }
 
   if (order?.agreement_license) {
     items.push({
-      title: 'agreement_license.pdf',
+      title: 'Лицензионный договор.pdf',
       url: normalizeDownloadUrl(order.agreement_license),
     });
   }
@@ -398,8 +398,15 @@ function applyLocalDocumentUrlsToPackage(orderId, pkg, documents) {
     }
   }
 
-  rewriteRootField('agreement_doc', 'agreement_doc.pdf');
-  rewriteRootField('agreement_license', 'agreement_license.pdf');
+  rewriteRootField('agreement_doc', 'Договор оферты.pdf');
+  rewriteRootField('agreement_license', 'Лицензионный договор.pdf');
+  // Legacy titles used in older rows
+  if (isExternalDocumentUrl(out.agreement_doc)) {
+    rewriteRootField('agreement_doc', 'agreement_doc.pdf');
+  }
+  if (isExternalDocumentUrl(out.agreement_license)) {
+    rewriteRootField('agreement_license', 'agreement_license.pdf');
+  }
 
   if (Array.isArray(out.attachments)) {
     const nextAttachments = [];
@@ -543,6 +550,31 @@ function mergeLocalAttachments(pkg, savedDocs) {
   return applyLocalDocumentUrlsToPackage(null, pkg, successful);
 }
 
+async function persistCreatedOrderDocuments(orderId, orderData, eventReference = 'order_create') {
+  if (!orderId || !orderData || typeof orderData !== 'object') {
+    return { saved: [], orderData };
+  }
+
+  const saved = await saveAllDocumentsFromOrder(orderId, orderData, eventReference);
+  const successful = saved.filter((doc) => doc.public_url && !doc.error);
+
+  if (!successful.length) {
+    return { saved, orderData };
+  }
+
+  const updated = mergeLocalAttachments(
+    typeof orderData === 'object' ? { ...orderData } : {},
+    successful
+  );
+
+  await db.query('UPDATE orders SET package = ? WHERE order_id = ?', [
+    JSON.stringify(updated),
+    orderId,
+  ]);
+
+  return { saved, orderData: updated };
+}
+
 async function getOrderDocuments(orderId) {
   const [rows] = await db.query(
     `SELECT id, order_id, title, source_url, file_path, public_url, event_reference, created_at
@@ -560,6 +592,7 @@ module.exports = {
   extractDownloadablesFromOrder,
   saveAttachmentsForOrder,
   saveAllDocumentsFromOrder,
+  persistCreatedOrderDocuments,
   mergeLocalAttachments,
   getOrderDocuments,
   countOrderDocuments,

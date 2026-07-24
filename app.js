@@ -530,7 +530,7 @@ app.post('/create-package', async (req, res) => {
             "accept": "application/vnd.leveltravel.v3.7",
             "authorization": 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
             "Content-Type": "application/json",
-            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d448"
+            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d447"
         };
 
         const buyerEmail =
@@ -643,6 +643,47 @@ app.post('/create-package', async (req, res) => {
                 await db.query(
                     'INSERT INTO orders (order_id, package, user_id) VALUES (?, ?, ?)',
                     [order_id, package, user_id]
+                );
+            }
+
+            // Save Договор оферты / Лицензионный договор from LT create response,
+            // rewrite package URLs to local /uploads, and email them.
+            try {
+                const {
+                    persistCreatedOrderDocuments,
+                    getDocumentKey,
+                } = require('./utils/orderDocuments');
+                const { sendSingleDocumentEmail } = require('./utils/orderEmails');
+
+                const { saved, orderData: withDocs } = await persistCreatedOrderDocuments(
+                    order_id,
+                    orderData,
+                    `order_create_${order_id}`
+                );
+                orderData = withDocs || orderData;
+
+                const [docRows] = await db.query(
+                    'SELECT * FROM orders WHERE order_id = ? LIMIT 1',
+                    [order_id]
+                );
+                const orderRowForDocs = docRows[0];
+                if (orderRowForDocs) {
+                    for (const doc of saved) {
+                        if (!doc?.public_url || doc.error) continue;
+                        const key = getDocumentKey(doc.title, doc.source_url);
+                        if (key !== 'agreement_doc' && key !== 'agreement_license') continue;
+                        sendSingleDocumentEmail(order_id, orderRowForDocs, doc).catch((err) => {
+                            console.error(
+                                '[ORDER_EMAIL] create-package agreement doc:',
+                                err.message
+                            );
+                        });
+                    }
+                }
+            } catch (docsErr) {
+                console.error(
+                    '[ORDER_DOCS] create-package save agreements failed:',
+                    docsErr.message
                 );
             }
 

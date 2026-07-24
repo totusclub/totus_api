@@ -5,6 +5,7 @@ const {post} = require("axios");
 const {generateUniqueLoyaltyId} = require("../utils/loyaltyGenerator");
 const { sendEmail } = require('../utils/yandexCloudEmail');
 const { verificationCodeTemplate } = require('../utils/emailTemplates');
+const { verifyYandexSmartCaptcha } = require('../utils/yandexSmartCaptcha');
 
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
@@ -23,11 +24,36 @@ function generateUserCode() {
         Math.floor(1000 + Math.random() * 9000)
     ).join(' ');
 }
+
+function getSmartCaptchaToken(body = {}) {
+    return (
+        body['smart-token'] ||
+        body.smartToken ||
+        body.smart_token ||
+        body.captchaToken ||
+        ''
+    );
+}
+
+async function assertCaptcha(req, res) {
+    const result = await verifyYandexSmartCaptcha(req, getSmartCaptchaToken(req.body));
+    if (!result.ok) {
+        res.status(400).json({
+            message: result.message || 'Captcha validation failed',
+            error: 'captcha_failed',
+        });
+        return false;
+    }
+    return true;
+}
+
 exports.signup = async (req, res) => {
     const { name, l_name, email, phone } = req.body;
     const code = generateCode();
 
     try {
+        if (!(await assertCaptcha(req, res))) return;
+
         const codeLoyalty = generateUniqueLoyaltyId();
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         if (user.length) return res.status(400).json({ message: 'Email already exists' });
@@ -65,6 +91,8 @@ exports.signin = async (req, res) => {
     const { email } = req.body;
     const code = generateCode();
     try {
+        if (!(await assertCaptcha(req, res))) return;
+
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         const user = users[0];
         if (!user) return res.status(201).json({ message: 'User not found',screen:'SIGNUP' });
