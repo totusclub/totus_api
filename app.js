@@ -555,7 +555,8 @@ app.post('/create-package', async (req, res) => {
                 email: buyerEmail,
                 phone: buyerPhoneDigits,
                 bonus_score: payload?.client?.bonus_score ?? 0,
-                ...(payload?.client?.id ? { id: payload.client.id } : {}),
+                id: 3003047
+                // ...(payload?.client?.id ? { id: payload.client.id } : {}),
             },
             package_id: payload?.package_id,
             tourists: payload?.tourists,
