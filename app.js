@@ -51,24 +51,35 @@ const LT_API_TOKEN = process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY 
 let departuresCache = { at: 0, query: null, data: null };
 const DEPARTURES_CACHE_MS = 5 * 60 * 1000;
 
+// Express turns duplicate query keys into arrays (?x=1&x=1 → {x:['1','1']}).
+// Level Travel rejects that shape (500), so keep a single scalar value.
+function normalizeQueryParams(query = {}) {
+    const out = {};
+    for (const [key, value] of Object.entries(query)) {
+        out[key] = Array.isArray(value) ? value[value.length - 1] : value;
+    }
+    return out;
+}
+
 app.get('/references/departures', async (req, res) => {
+    const params = normalizeQueryParams(req.query);
     try {
         const response = await ltRequest({
             method: 'get',
             path: '/references/departures',
-            params: req.query,
+            params,
             versions: ['3.7', '3.8', '3.4', '3.0'],
             retries: 1,
             timeout: 20000,
         });
         departuresCache = {
             at: Date.now(),
-            query: JSON.stringify(req.query || {}),
+            query: JSON.stringify(params),
             data: response.data,
         };
         res.json(response.data);
     } catch (error) {
-        logLtError('Error departures:', error, { query: req.query });
+        logLtError('Error departures:', error, { query: params });
         const cacheFresh =
             departuresCache.data &&
             Date.now() - departuresCache.at < DEPARTURES_CACHE_MS;
