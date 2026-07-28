@@ -350,9 +350,12 @@ app.get('/grouped-hotels', async (req, res) => {
         const params = { request_id };
 
         // Level.Travel expects operator_ids; frontend may send readyOperators.
-        const operatorIds = operator_ids || readyOperators;
-        if (operatorIds !== undefined && operatorIds !== null && operatorIds !== '') {
-            params.operator_ids = operatorIds;
+        // Axios may deliver repeated keys as an array — always forward as CSV.
+        const rawOperatorIds = operator_ids || readyOperators;
+        if (rawOperatorIds !== undefined && rawOperatorIds !== null && rawOperatorIds !== '') {
+            params.operator_ids = Array.isArray(rawOperatorIds)
+                ? rawOperatorIds.map(String).filter(Boolean).join(',')
+                : String(rawOperatorIds);
         }
 
         const passthroughKeys = new Set(['page_limit', 'page_number', 'sort_by']);
