@@ -339,50 +339,41 @@ app.get('/grouped-hotels', async (req, res) => {
         const {
             request_id,
             operator_ids,
-            filter_instant_confirm,
-            filter_rating,
-            filter_price_min,
-            filter_price_max,
-            filter_stars,
-            filter_regions,
-            filter_hotel_type,
-            filter_meals,
-            filter_operators,
-            filter_line,
-            page_limit,
-            page_number,
-            sort_by,
-            filter_beach_surface
+            readyOperators,
+            ...rest
         } = req.query;
 
         if (!request_id) {
             return res.status(400).json({ error: 'Missing request_id' });
         }
 
-        const params = {
-            request_id,
-            filter_instant_confirm:filter_instant_confirm,
-            ...(operator_ids && { operator_ids }),
-            ...(filter_rating && { filter_rating }),
-            ...(filter_price_min && { filter_price_min }),
-            ...(filter_price_max && { filter_price_max }),
-            ...(filter_stars && { filter_stars }),
-            ...(filter_regions && { filter_regions }),
-            ...(filter_hotel_type && { filter_hotel_type }),
-            ...(filter_meals && { filter_meals }),
-            ...(filter_operators && { filter_operators }),
-            ...(filter_line && { filter_line }),
-            ...(page_limit && { page_limit }),
-            ...(page_number && { page_number }),
-            ...(sort_by && { sort_by }),
-            ...(filter_beach_surface && { filter_beach_surface }),
-        };
+        const params = { request_id };
 
-        console.log('params',params)
+        // Level.Travel expects operator_ids; frontend may send readyOperators.
+        const operatorIds = operator_ids || readyOperators;
+        if (operatorIds !== undefined && operatorIds !== null && operatorIds !== '') {
+            params.operator_ids = operatorIds;
+        }
+
+        const passthroughKeys = new Set(['page_limit', 'page_number', 'sort_by']);
+
+        for (const [key, value] of Object.entries(rest)) {
+            if (value === undefined || value === null || value === '') continue;
+            if (!key.startsWith('filter_') && !passthroughKeys.has(key)) continue;
+            // Amenity toggles are omit-when-off; only instant_confirm sends explicit false.
+            if (String(value) === 'false' && key !== 'filter_instant_confirm') continue;
+            params[key] = value;
+        }
+
+        console.log('params', params);
 
         const response = await axios.get(`${BASE_URL}/search/get_grouped_hotels`, {
             params,
             headers: HEADERS,
+            paramsSerializer: {
+                // Keep CSV filter values (e.g. filter_stars=3,4,5) as a single param.
+                indexes: null,
+            },
         });
 
         res.json(response.data);
