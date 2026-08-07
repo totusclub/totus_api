@@ -7,9 +7,28 @@ const { sendEmail } = require('../utils/yandexCloudEmail');
 const { verificationCodeTemplate } = require('../utils/emailTemplates');
 const { verifyYandexSmartCaptcha } = require('../utils/yandexSmartCaptcha');
 
+// Apple App Review demo account — fixed email + code, only this address.
+const APPLE_DEMO_EMAIL = 'test@totus.com';
+const APPLE_DEMO_CODE = '1111';
+
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
+function normalizeEmail(email = '') {
+    return String(email).trim().toLowerCase();
+}
+
+function isAppleDemoEmail(email) {
+    return normalizeEmail(email) === APPLE_DEMO_EMAIL;
+}
+
+function resolveVerificationCode(email) {
+    return isAppleDemoEmail(email) ? APPLE_DEMO_CODE : generateCode();
+}
+
 async function sendVerificationEmail(email, code, { name } = {}) {
+    // Demo account: do not send a real email; reviewers use the fixed code.
+    if (isAppleDemoEmail(email)) return;
+
     const verificationEmail = verificationCodeTemplate(code, { name });
     await sendEmail({
         to: email,
@@ -35,7 +54,9 @@ function getSmartCaptchaToken(body = {}) {
     );
 }
 
-async function assertCaptcha(req, res) {
+async function assertCaptcha(req, res, { skip = false } = {}) {
+    if (skip) return true;
+
     const result = await verifyYandexSmartCaptcha(req, getSmartCaptchaToken(req.body));
     if (!result.ok) {
         res.status(400).json({
@@ -48,11 +69,12 @@ async function assertCaptcha(req, res) {
 }
 
 exports.signup = async (req, res) => {
-    const { name, l_name, email, phone } = req.body;
-    const code = generateCode();
+    const { name, l_name, phone } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const code = resolveVerificationCode(email);
 
     try {
-        if (!(await assertCaptcha(req, res))) return;
+        if (!(await assertCaptcha(req, res, { skip: isAppleDemoEmail(email) }))) return;
 
         const codeLoyalty = generateUniqueLoyaltyId();
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
@@ -72,9 +94,30 @@ exports.signup = async (req, res) => {
 
 
 exports.verifyCode = async (req, res) => {
-    const { email, code } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const code = String(req.body.code ?? '').trim();
     try {
-        const [users] = await db.query('SELECT * FROM users WHERE email = ? AND code = ?', [email, code]);
+        let users;
+
+        if (isAppleDemoEmail(email) && code === APPLE_DEMO_CODE) {
+            const [demoUsers] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+            users = demoUsers;
+            if (users.length === 0) {
+                const codeLoyalty = generateUniqueLoyaltyId();
+                await db.query(
+                    'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
+                    ['Apple', 'Reviewer', email, null, APPLE_DEMO_CODE, codeLoyalty]
+                );
+                const [created] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+                users = created;
+            }
+        } else {
+            const [matched] = await db.query(
+                'SELECT * FROM users WHERE email = ? AND code = ?',
+                [email, code]
+            );
+            users = matched;
+        }
 
         if (users.length === 0) return res.status(400).json({ message: 'Invalid code' });
 
@@ -88,13 +131,25 @@ exports.verifyCode = async (req, res) => {
 };
 
 exports.signin = async (req, res) => {
-    const { email } = req.body;
-    const code = generateCode();
+    const email = normalizeEmail(req.body.email);
+    const code = resolveVerificationCode(email);
     try {
-        if (!(await assertCaptcha(req, res))) return;
+        if (!(await assertCaptcha(req, res, { skip: isAppleDemoEmail(email) }))) return;
 
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-        const user = users[0];
+        let user = users[0];
+
+        // Ensure Apple demo account always exists and can sign in.
+        if (!user && isAppleDemoEmail(email)) {
+            const codeLoyalty = generateUniqueLoyaltyId();
+            await db.query(
+                'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
+                ['Apple', 'Reviewer', email, null, code, codeLoyalty]
+            );
+            const [created] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+            user = created[0];
+        }
+
         if (!user) return res.status(201).json({ message: 'User not found',screen:'SIGNUP' });
 
         await db.query('UPDATE users SET code = ? WHERE email = ?', [code, email]);

@@ -457,11 +457,65 @@ app.get('/get-hotel-offers', async (req, res) => {
 
 app.post('/packages/flights', async (req, res) => {
     try {
+        const raw = req.body && typeof req.body === 'object' ? { ...req.body } : {};
+        const packageIdRaw = raw.package_id ?? raw.packageId;
+        const packageIdNum = Number(packageIdRaw);
+
+        if (
+            packageIdRaw == null ||
+            packageIdRaw === '' ||
+            !Number.isFinite(packageIdNum) ||
+            packageIdNum <= 0 ||
+            !/^\d+$/.test(String(packageIdRaw).trim())
+        ) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing or invalid package_id',
+            });
+        }
+
+        // Drop empty / invalid filters — LT returns 400/422 for blank time ranges etc.
+        const data = { package_id: Math.trunc(packageIdNum) };
+        for (const [key, value] of Object.entries(raw)) {
+            if (key === 'package_id' || key === 'packageId') continue;
+            if (value == null) continue;
+            if (Array.isArray(value) && value.length === 0) continue;
+
+            if (
+                typeof value === 'object' &&
+                !Array.isArray(value) &&
+                (key.includes('time') || key.endsWith('_time'))
+            ) {
+                const from = value.from;
+                const to = value.to;
+                const iso = /^\d{2}:\d{2}(:\d{2})?$/;
+                if (
+                    typeof from === 'string' &&
+                    typeof to === 'string' &&
+                    iso.test(from.trim()) &&
+                    iso.test(to.trim())
+                ) {
+                    data[key] = { from: from.trim(), to: to.trim() };
+                }
+                continue;
+            }
+
+            if (
+                typeof value === 'object' &&
+                !Array.isArray(value) &&
+                Object.values(value).every((v) => v == null || v === '')
+            ) {
+                continue;
+            }
+
+            data[key] = value;
+        }
+
         const response = await ltRequest({
             method: 'post',
             path: '/packages/flights',
-            data: req.body,
-            versions: ['3.8', '3.7', '3.4'],
+            data,
+            versions: ['3.8', '3.7', '3.6', '3.5', '3.4'],
             retries: 0,
             timeout: 60000,
         });
