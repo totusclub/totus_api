@@ -1,8 +1,69 @@
 const db = require('../db');
+const { sendEmail } = require('../utils/yandexCloudEmail');
 
 const REQUEST_TYPES = ['cancel', 'message'];
 const STATUSES = ['new', 'in_progress', 'done', 'rejected'];
 const MESSAGE_MAX_LENGTH = 2000;
+const TYPE_LABELS = { cancel: 'отмена', message: 'сообщение' };
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Fire-and-forget staff notification about a new order request.
+// Recipient comes from ORDER_REQUESTS_NOTIFY_EMAIL; without it we just log and skip.
+async function notifyStaffAboutRequest({ id, orderId, userId, type, message }) {
+    const to = process.env.ORDER_REQUESTS_NOTIFY_EMAIL;
+    if (!to) {
+        console.log('[ORDER_REQUESTS] ORDER_REQUESTS_NOTIFY_EMAIL is not set, skipping notify email');
+        return;
+    }
+
+    // Fresh user data from DB — the JWT payload can be stale.
+    const [users] = await db.query(
+        'SELECT name, l_name, email, phone FROM users WHERE id = ? LIMIT 1',
+        [userId],
+    );
+    const user = users[0] || {};
+    const userName = [user.name, user.l_name].filter(Boolean).join(' ') || '—';
+    const typeLabel = TYPE_LABELS[type] || type;
+    const createdAt = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
+
+    const subject = `Новое обращение по заказу ${orderId}: ${typeLabel}`;
+
+    const html = [
+        `<h2>Новое обращение по заказу №${escapeHtml(orderId)}</h2>`,
+        `<p><strong>Тип:</strong> ${escapeHtml(typeLabel)}</p>`,
+        `<p><strong>Заказ:</strong> ${escapeHtml(orderId)}</p>`,
+        `<p><strong>Пользователь:</strong> ${escapeHtml(userName)} (id ${escapeHtml(userId)})</p>`,
+        `<p><strong>Email:</strong> ${escapeHtml(user.email || '—')}</p>`,
+        `<p><strong>Телефон:</strong> ${escapeHtml(user.phone || '—')}</p>`,
+        message
+            ? `<p><strong>Сообщение:</strong><br>${escapeHtml(message).replace(/\n/g, '<br>')}</p>`
+            : '',
+        `<p><strong>Дата:</strong> ${escapeHtml(createdAt)}</p>`,
+        `<p>Обращение #${escapeHtml(id)}</p>`,
+    ].filter(Boolean).join('\n');
+
+    const text = [
+        `Новое обращение по заказу №${orderId}`,
+        `Тип: ${typeLabel}`,
+        `Заказ: ${orderId}`,
+        `Пользователь: ${userName} (id ${userId})`,
+        `Email: ${user.email || '—'}`,
+        `Телефон: ${user.phone || '—'}`,
+        message ? `Сообщение: ${message}` : null,
+        `Дата: ${createdAt}`,
+        `Обращение #${id}`,
+    ].filter(Boolean).join('\n');
+
+    await sendEmail({ to, subject, text, html });
+}
 
 // POST /api/order-requests (user)
 exports.createRequest = async (req, res) => {
@@ -48,6 +109,12 @@ exports.createRequest = async (req, res) => {
             'INSERT INTO order_requests (order_id, user_id, type, message) VALUES (?, ?, ?, ?)',
             [orderId, userId, type, message],
         );
+
+        // Do not block the response on the notification email.
+        notifyStaffAboutRequest({ id: result.insertId, orderId, userId, type, message }).catch((err) => {
+            console.error('[ORDER_REQUESTS] notify email failed:', err.message);
+        });
+
         res.status(201).json({ ok: true, id: result.insertId });
     } catch (err) {
         console.error('Error creating order request:', err.message);
