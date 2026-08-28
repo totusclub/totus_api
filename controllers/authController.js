@@ -19,8 +19,8 @@ exports.signInTeacher = async (req, res) => {
             return res.status(401).json({ message: 'Invalid email or password' });
         }
 
-        const accessToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_SECRET, { expiresIn: '10s' });
-        const refreshToken = jwt.sign({ id: staff.id, email: staff.email }, process.env.JWT_REFRESH_SECRET, { expiresIn: '10s' });
+        const accessToken = jwt.sign({ id: staff.id, email: staff.email, scope: 'staff' }, process.env.JWT_SECRET, { expiresIn: '12h' });
+        const refreshToken = jwt.sign({ id: staff.id, email: staff.email, scope: 'staff' }, process.env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
         await pool.query('UPDATE staff SET refresh_token = ? WHERE id = ?', [refreshToken, staff.id]);
 
@@ -57,7 +57,7 @@ exports.refreshToken = async (req, res) => {
             }
 
             // Generate a new access token
-            const accessToken = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '10s' });
+            const accessToken = jwt.sign({ id: user.id, email: user.email, scope: 'staff' }, process.env.JWT_SECRET, { expiresIn: '12h' });
 
             res.json({ accessToken });
         });
@@ -238,4 +238,3 @@ exports.overview = async (req, res) => {
         return res.status(500).json({ message: 'Server error' });
     }
 };
-
