@@ -27,8 +27,14 @@ const crypto = require('crypto');
 const path = require('path');
 const {json, response} = require("express");
 
+const { requireAuth, optionalAuth, resolveOwnerId, assertOrderOwner, authMode } = require('./lib/auth');
+const { corsMiddleware, helmetMiddleware, allowedOrigins } = require('./lib/security');
+
 const app = express();
-app.use(cors());
+// За nginx — один хоп; нужно для корректного req.ip (rate-limit, auth-логи).
+app.set('trust proxy', 1);
+app.use(helmetMiddleware());
+app.use(corsMiddleware());
 app.use(express.json());
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -582,7 +588,7 @@ const generationBankToken = async ()=>{
     }
 }
 
-app.post('/create-package', async (req, res) => {
+app.post('/create-package', requireAuth(['user']), async (req, res) => {
     try {
         const payload = req.body;
 
@@ -693,7 +699,9 @@ app.post('/create-package', async (req, res) => {
             };
 
             let package = JSON.stringify(orderData);
-            let user_id = payload.user_id;
+            // Владелец заказа — из токена; user_id из body только без токена (log-режим) или для staff.
+            const user_id = resolveOwnerId(req, res, payload.user_id);
+            if (user_id === null && res.headersSent) return;
             try {
                 await db.query(
                     'INSERT INTO orders (order_id, package, user_id, lt_auth_token) VALUES (?, ?, ?, ?)',
@@ -838,7 +846,7 @@ app.post('/validate-tourists', async (req, res) => {
 // Requires:
 //   - Partner key is applied server-side via Authorization header
 //   - Client auth_token from order create (orders.lt_auth_token)
-app.get('/client/orders', async (req, res) => {
+app.get('/client/orders', requireAuth(['user']), async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
         const auth_token = String(src.auth_token || '').trim();
@@ -888,7 +896,7 @@ app.get('/client/orders', async (req, res) => {
     }
 });
 
-app.get('/client/orders/:order_id', async (req, res) => {
+app.get('/client/orders/:order_id', requireAuth(['user']), async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
         const orderId = Number(req.params.order_id);
@@ -964,7 +972,7 @@ app.get('/client/orders/:order_id', async (req, res) => {
 });
 
 // Fetch LT order + save package to DB + download all PDFs
-app.post('/client/orders/:order_id/sync', async (req, res) => {
+app.post('/client/orders/:order_id/sync', requireAuth(['user']), async (req, res) => {
     try {
         const orderId = Number(req.params.order_id);
         const auth_token =
@@ -1001,7 +1009,7 @@ app.post('/client/orders/:order_id/sync', async (req, res) => {
     }
 });
 
-app.get('/orders', async (req, res) => {
+app.get('/orders', requireAuth(['user']), async (req, res) => {
     try {
         const orderId = String(req.query.order_id || '').replace(/^ORDER/i, '').trim();
         if (!orderId) {
@@ -1019,6 +1027,7 @@ app.get('/orders', async (req, res) => {
         // Load DB row only for auth_token + local payment metadata (not as source of tour data)
         const [rows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
         const orderRow = rows[0] || null;
+        if (orderRow && !assertOrderOwner(req, res, orderRow.user_id)) return;
         const lastLtEvent = await getLatestLtEvent(orderId);
 
         let ltOrder = null;
@@ -1095,10 +1104,18 @@ app.get('/orders', async (req, res) => {
     }
 });
 
-app.get('/orders/:order_id/payment', async (req, res) => {
+app.get('/orders/:order_id/payment', requireAuth(['user']), async (req, res) => {
     try {
         const { getOrderPayment } = require('./utils/orderPayment');
         const { createVtbPaymentForOrder, normalizeAmount } = require('./utils/vtbCreatePayment');
+
+        if (req.auth && req.auth.role !== 'staff') {
+            const [ownerRows] = await db.query(
+                'SELECT user_id FROM orders WHERE order_id = ? LIMIT 1',
+                [String(req.params.order_id).replace(/^ORDER/i, '')]
+            );
+            if (ownerRows[0] && !assertOrderOwner(req, res, ownerRows[0].user_id)) return;
+        }
 
         let payment = await getOrderPayment(req.params.order_id);
 
@@ -1155,11 +1172,15 @@ app.get('/orders/:order_id/payment', async (req, res) => {
     }
 });
 
-app.get('/orders/documents', async (req, res) => {
+app.get('/orders/documents', requireAuth(['user']), async (req, res) => {
     try {
         const orderId = Number(req.query.order_id);
         if (!Number.isFinite(orderId)) {
             return res.status(400).json({ error: 'Missing or invalid order_id' });
+        }
+        if (req.auth && req.auth.role !== 'staff') {
+            const [ownerRows] = await db.query('SELECT user_id FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
+            if (ownerRows[0] && !assertOrderOwner(req, res, ownerRows[0].user_id)) return;
         }
 
         const { getOrderDocuments } = require('./utils/orderDocuments');
@@ -1170,9 +1191,14 @@ app.get('/orders/documents', async (req, res) => {
         res.status(500).json({ error: 'Failed to get order documents' });
     }
 });
-app.get('/user/orders', async (req, res) => {
+app.get('/user/orders', requireAuth(['user']), async (req, res) => {
     try {
-        const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [req.query.user_id]);
+        const userId = resolveOwnerId(req, res, req.query.user_id);
+        if (userId === null) {
+            if (res.headersSent) return;
+            return res.status(400).json({ error: 'Missing user_id' });
+        }
+        const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [userId]);
         const { prepareOrderRowForClient } = require('./utils/orderDocuments');
         const { getLatestLtEventsByOrderIds } = require('./utils/clientOrders');
 
@@ -1562,8 +1588,12 @@ app.get('/tours/level_travel/history', verifyPartnerApiKey, async (req, res) => 
 });
 
 app.use('/api/auth', authRoutes);
+// Алиас для приложения (modules/axios зовёт /customer-auth/refresh-token)
+app.post('/customer-auth/refresh-token', require('./controllers/auth.controller').refresh);
 app.use('/api/email', emailRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
+// Всё остальное под /api/admin — только staff (AUTH_MODE=log → пропуск с логом).
+app.use('/api/admin', requireAuth(['staff']));
 app.use('/api/admin', faqRoutes);
 app.use('/api/admin', popularRoutes);
 app.use('/api/content', contentRoutes);
@@ -1593,4 +1623,6 @@ app.listen(PORT, () => {
     console.log(`[CALLBACKS] Level Travel: POST /tours/level_travel/order_refund`);
     console.log(`[CALLBACKS] Level Travel: GET  /tours/level_travel/history`);
     console.log(`[CALLBACKS] PARTNER_API_KEY loaded: ${Boolean(process.env.PARTNER_API_KEY)}`);
+    console.log(`[AUTH] mode=${authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
+    console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
 });
