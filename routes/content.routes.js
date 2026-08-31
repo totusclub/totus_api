@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { uploadImage } = require('../controllers/content.controller');
+const { requireAuth } = require('../lib/auth');
 
 const MAX_IMAGE_MB = Number(process.env.UPLOAD_MAX_IMAGE_MB || 15);
 const MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024;
@@ -67,6 +68,10 @@ function handleUpload(fieldName) {
         });
     };
 }
+
+// Загрузка картинок — только из админки (staff JWT). Проверка стоит ДО multer,
+// чтобы анонимный запрос не писал файл на диск.
+router.use(requireAuth(['staff']));
 
 // Route for CKEditor / admin editor upload
 router.post('/upload', handleUpload('upload'), uploadImage);

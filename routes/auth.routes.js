@@ -1,13 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const { requireAuth } = require('../lib/auth');
+const { authLimiter } = require('../lib/security');
 
-router.post('/signup', authController.signup);
-router.post('/verify', authController.verifyCode);
-router.post('/signin', authController.signin);
+router.post('/signup', authLimiter, authController.signup);
+router.post('/verify', authLimiter, authController.verifyCode);
+router.post('/signin', authLimiter, authController.signin);
 router.post('/generation-loyalty', authController.generationLoyalty);
 
-router.post('/verification-code', authController.verificationCode);
+// Волна 1 (SECURITY_JWT_PLAN_RU.md): профиль по токену, refresh, вход агента.
+router.get('/me', requireAuth(['user', 'agent'], { strict: true }), authController.me);
+router.post('/refresh', authLimiter, authController.refresh);
+router.post('/agent/sign-in', authLimiter, authController.agentSignIn);
+
+router.post('/verification-code', authLimiter, authController.verificationCode);
 router.post('/telegram-verification-callback', authController.telegramVerificationCallback);
 
 
