@@ -6,6 +6,7 @@ const {generateUniqueLoyaltyId} = require("../utils/loyaltyGenerator");
 const { sendEmail } = require('../utils/yandexCloudEmail');
 const { verificationCodeTemplate } = require('../utils/emailTemplates');
 const { verifyYandexSmartCaptcha } = require('../utils/yandexSmartCaptcha');
+const auth = require('../lib/auth');
 
 // Apple App Review demo account — fixed email + code, only this address.
 const APPLE_DEMO_EMAIL = 'test@totus.com';
@@ -68,6 +69,14 @@ async function assertCaptcha(req, res, { skip = false } = {}) {
     return true;
 }
 
+// Ответ с токенами для сайта/приложения. `authToken` — историческое имя,
+// его читают текущие версии сайта и приложения; accessToken/refreshToken — новые.
+function issueUserTokens(userRow) {
+    const accessToken = auth.signUserToken(userRow);
+    const refreshToken = auth.signRefreshToken(userRow.id, 'user');
+    return { auth: true, authToken: accessToken, accessToken, refreshToken };
+}
+
 exports.signup = async (req, res) => {
     const { name, l_name, phone } = req.body;
     const email = normalizeEmail(req.body.email);
@@ -112,6 +121,7 @@ exports.verifyCode = async (req, res) => {
                 users = created;
             }
         } else {
+            if (!code) return res.status(400).json({ message: 'Invalid code' });
             const [matched] = await db.query(
                 'SELECT * FROM users WHERE email = ? AND code = ?',
                 [email, code]
@@ -123,8 +133,7 @@ exports.verifyCode = async (req, res) => {
 
         await db.query('UPDATE users SET code = NULL WHERE email = ?', [email]);
 
-        const token = jwt.sign(users[0], process.env.JWT_SECRET, { expiresIn: '30d' })
-        res.status(200).json({ auth: true, authToken: token });
+        res.status(200).json(issueUserTokens(users[0]));
     } catch (err) {
         res.status(500).json({ message: 'Verification failed', error: err.message,auth:false });
     }
@@ -157,6 +166,94 @@ exports.signin = async (req, res) => {
         res.status(201).json({ message: 'Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
         res.status(500).json({ message: 'Signin failed', error: err.message });
+    }
+};
+
+// GET /api/auth/me — профиль по токену (сайт/приложение перестают читать его из payload).
+exports.me = async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM users WHERE id = ? LIMIT 1', [req.auth.id]);
+        const user = rows[0];
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        res.json({ user: { ...auth.publicUser(user), role: auth.roleOf(req.auth.payload) } });
+    } catch (err) {
+        res.status(500).json({ message: 'Failed to load profile', error: err.message });
+    }
+};
+
+// POST /api/auth/refresh  { refreshToken }  (также принимает { accessToken, refreshToken } — формат приложения)
+exports.refresh = async (req, res) => {
+    const refreshToken = String(req.body?.refreshToken || req.body?.refresh_token || req.body?.token || '').trim();
+    if (!refreshToken) return res.status(400).json({ message: 'Missing refreshToken' });
+    if (!process.env.JWT_REFRESH_SECRET) return res.status(503).json({ error: 'auth_not_configured' });
+
+    try {
+        const payload = auth.verifyRefreshToken(refreshToken);
+        if (!payload || (payload.scope !== 'user' && payload.scope !== 'agent')) {
+            return res.status(401).json({ error: 'unauthorized' });
+        }
+        const [rows] = await db.query('SELECT * FROM users WHERE id = ? LIMIT 1', [payload.id]);
+        const user = rows[0];
+        if (!user) return res.status(401).json({ error: 'unauthorized' });
+        if (Number(user.access) === 1 && payload.scope === 'agent') {
+            return res.status(403).json({ error: 'forbidden' });
+        }
+
+        if (payload.scope === 'agent') {
+            return res.json({
+                accessToken: auth.signAgentToken(user),
+                refreshToken: auth.signRefreshToken(user.id, 'agent'),
+            });
+        }
+        res.json(issueUserTokens(user));
+    } catch (err) {
+        res.status(500).json({ message: 'Refresh failed', error: err.message });
+    }
+};
+
+// POST /api/auth/agent/sign-in  { email, password }
+// Агенты — строки users с role='agent'. Пароли переводятся на bcrypt лениво:
+// если в БД не bcrypt-хэш, сравниваем как есть и при успехе перехэшируем.
+function looksLikeBcrypt(value) {
+    return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+exports.agentSignIn = async (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password ?? '');
+    if (!email || !password) return res.status(400).json({ message: 'Email and password are required' });
+
+    try {
+        const [rows] = await db.query('SELECT * FROM users WHERE email = ? LIMIT 1', [email]);
+        const user = rows[0];
+        const invalid = () => res.status(401).json({ message: 'Invalid email or password' });
+
+        if (!user || String(user.role || '').toLowerCase() !== 'agent' || !user.password) return invalid();
+
+        let ok = false;
+        if (looksLikeBcrypt(user.password)) {
+            ok = await bcrypt.compare(password, user.password);
+        } else if (user.password === password) {
+            ok = true;
+            try {
+                const hash = await bcrypt.hash(password, 10);
+                await db.query('UPDATE users SET password = ? WHERE id = ?', [hash, user.id]);
+            } catch (rehashErr) {
+                console.warn('[AUTH] agent password rehash failed:', rehashErr.message);
+            }
+        }
+        if (!ok) return invalid();
+
+        // users.access: 0/NULL — разрешён, 1 — заблокирован (как в calling_api_v2 login)
+        if (Number(user.access) === 1) return res.status(403).json({ message: 'Access denied' });
+
+        res.json({
+            accessToken: auth.signAgentToken(user),
+            refreshToken: auth.signRefreshToken(user.id, 'agent'),
+            user: { ...auth.publicUser(user), role: 'agent' },
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Sign-in failed', error: err.message });
     }
 };
 
