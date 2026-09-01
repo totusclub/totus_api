@@ -6,17 +6,19 @@ const {
   extractDownloadablesFromOrder,
 } = require('./orderDocuments');
 const { logCallback, logCallbackError } = require('./callbackLogger');
+const { requireEnv } = require('../lib/env');
 
 const LOG = 'LT_CLIENT';
 const BASE_URL = 'https://api.level.travel';
-const LT_API_TOKEN =
-  process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
+// Без fallback-литерала (Б.1). Заголовки строятся при вызове — с понятной ошибкой, если токен не задан.
+const getLtToken = () =>
+  process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || requireEnv('LT_API_TOKEN');
 
-const HEADERS_3_4 = {
+const getHeaders34 = () => ({
   Accept: 'application/vnd.leveltravel.v3.4',
-  Authorization: `Token token="${LT_API_TOKEN}"`,
+  Authorization: `Token token="${getLtToken()}"`,
   'Content-Type': 'application/json',
-};
+});
 
 function resolveAuthToken(orderRow, overrideToken) {
   const explicit = String(overrideToken || '').trim();
@@ -63,18 +65,18 @@ async function fetchClientOrderRaw(orderId, authToken) {
   logCallback(LOG, 'FETCH', 'GET /client/orders/:id', { order_id: orderId });
 
   const attempts = [
-    () => axios.post(url, payload, { headers: HEADERS_3_4, timeout: 60000 }),
+    () => axios.post(url, payload, { headers: getHeaders34(), timeout: 60000 }),
     () =>
       axios({
         method: 'GET',
         url,
-        headers: HEADERS_3_4,
+        headers: getHeaders34(),
         data: payload,
         timeout: 60000,
       }),
     () =>
       axios.get(url, {
-        headers: HEADERS_3_4,
+        headers: getHeaders34(),
         params: payload,
         timeout: 60000,
       }),
@@ -141,7 +143,7 @@ async function fetchClientOrdersList({
   const attempts = [
     () =>
       axios.get(`${BASE_URL}/client/orders`, {
-        headers: HEADERS_3_4,
+        headers: getHeaders34(),
         params: payload,
         timeout: 60000,
       }),
@@ -149,13 +151,13 @@ async function fetchClientOrdersList({
       axios({
         method: 'GET',
         url: `${BASE_URL}/client/orders`,
-        headers: HEADERS_3_4,
+        headers: getHeaders34(),
         data: payload,
         timeout: 60000,
       }),
     () =>
       axios.post(`${BASE_URL}/client/orders`, payload, {
-        headers: HEADERS_3_4,
+        headers: getHeaders34(),
         timeout: 60000,
       }),
   ];
@@ -413,6 +415,9 @@ module.exports = {
   shouldDownloadDocuments,
   getNewStateFromChanges,
   parseLtOrderResponse,
-  HEADERS_3_4,
+  getHeaders34,
+  get HEADERS_3_4() {
+    return getHeaders34();
+  },
   BASE_URL,
 };

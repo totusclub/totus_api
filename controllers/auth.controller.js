@@ -267,8 +267,9 @@ exports.generationLoyalty = async (req, res) => {
 };
 
 const TELEGRAM_GATEWAY_URL = 'https://gatewayapi.telegram.org/';
-const TELEGRAM_GATEWAY_TOKEN = 'AAGBIQAAULKEuFRsUuz4HRKyFDIPW20wYKw2A8YwISEVGA'; // replace this
+const TELEGRAM_GATEWAY_TOKEN = process.env.TELEGRAM_GATEWAY_TOKEN || null;
 exports.verificationCode = async (req, res) => {
+    if (!TELEGRAM_GATEWAY_TOKEN) return res.status(503).json({ message: 'Phone verification is not configured' });
     const { phone } = req.body;
     // const code = generateCode();
     const code = 1111;
