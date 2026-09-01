@@ -2,17 +2,19 @@ const db = require('../db');
 const axios = require('axios');
 const crypto = require('crypto');
 const { logCallback, logCallbackError } = require('./callbackLogger');
+const { requireEnv } = require('../lib/env');
 
 const LOG = 'VTB_CALLBACK';
 
 const LT_BASE_URL = 'https://api.level.travel';
-const LT_PARTNER_API_KEY =
-  process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
-const LT_HEADERS = {
+// Без fallback-литерала (Б.1). Тот же partner token, что и в остальных LT-модулях (LT_API_TOKEN / алиас LT_PARTNER_API_KEY).
+const getLtToken = () =>
+  process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || requireEnv('LT_API_TOKEN');
+const getLtHeaders = () => ({
   Accept: 'application/vnd.leveltravel.v3.7',
-  Authorization: `Token token="${LT_PARTNER_API_KEY}"`,
+  Authorization: `Token token="${getLtToken()}"`,
   'Content-Type': 'application/json',
-};
+});
 
 const sha256 = (data) =>
   crypto.createHash('sha256').update(String(data)).digest('hex');
@@ -109,12 +111,23 @@ async function notifyLevelTravelPaid(dbOrderId, amount) {
     return { result: 'skipped', reason: 'no_order_id' };
   }
 
+  let ltKey;
+  try {
+    ltKey = getLtToken();
+  } catch (envErr) {
+    logCallbackError(LOG, 'LT_NOTIFY', 'NOT sent — LT token is not configured', {
+      order_id: orderId,
+      error: envErr.message,
+    });
+    return { result: 'error', order_id: orderId, status: 500, error: envErr.message };
+  }
+
   const status = 'paid';
   const signature = generateSignature(
     orderId,
     status,
     amount,
-    LT_PARTNER_API_KEY
+    ltKey
   );
 
   logCallback(LOG, 'LT_NOTIFY', 'Sending payment notify to Level Travel', {
@@ -127,7 +140,7 @@ async function notifyLevelTravelPaid(dbOrderId, amount) {
     const response = await axios.post(
       `${LT_BASE_URL}/orders/${orderId}/notify`,
       { order_id: orderId, status, amount, signature },
-      { headers: LT_HEADERS }
+      { headers: getLtHeaders() }
     );
     logCallback(LOG, 'LT_NOTIFY', 'OK — Level Travel accepted payment', {
       order_id: orderId,
