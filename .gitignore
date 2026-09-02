@@ -9,3 +9,14 @@ package-lock.json
 
 # JetBrains IDE settings
 .idea/
+
+# Секреты и локальное окружение (Б.1): в репо только .env.example
+.env
+.env.*
+!.env.example
+
+# Ключи и сертификаты
+*.p8
+*.pem
+*.key
+*-firebase-adminsdk-*.json

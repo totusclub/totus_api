@@ -1,18 +1,30 @@
 const axios = require('axios');
+const { requireEnv } = require('../lib/env');
 
 const BASE_URL = 'https://api.level.travel';
 
+// Без fallback-литерала (Б.1): токен только из окружения.
 const LT_API_TOKEN =
   process.env.LT_API_TOKEN ||
   process.env.LT_PARTNER_API_KEY ||
-  '6a6ca82f341fea2a9d19b0d581c448e7';
+  null;
+
+/** Partner token LT; бросает понятную ошибку, если LT_API_TOKEN/LT_PARTNER_API_KEY не заданы. */
+function getLtToken() {
+  return LT_API_TOKEN || requireEnv('LT_API_TOKEN');
+}
 
 const DEFAULT_VERSIONS = ['3.8', '3.7', '3.6', '3.5', '3.4', '3.0'];
 
 function getLtHeaders(version = '3.7') {
   return {
     Accept: `application/vnd.leveltravel.v${version}`,
-    Authorization: `Token token="${LT_API_TOKEN}"`,
+    // Ленивый getter: app.js строит HEADERS при загрузке модуля, а ошибка
+    // «токен не задан» должна возникать при реальном LT-вызове (внутри try/catch роута),
+    // а не ронять процесс на старте (см. reportEnv в lib/env.js).
+    get Authorization() {
+      return `Token token="${getLtToken()}"`;
+    },
     'Content-Type': 'application/json',
   };
 }
@@ -117,6 +129,7 @@ function sendLtAxiosError(res, error, fallbackMessage) {
 module.exports = {
   BASE_URL,
   LT_API_TOKEN,
+  getLtToken,
   DEFAULT_VERSIONS,
   getLtHeaders,
   getLtErrorPayload,

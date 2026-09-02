@@ -3,18 +3,20 @@ const db = require('../db');
 const axios = require('axios');
 const crypto = require('crypto');
 const { logCallback, logCallbackError } = require('./callbackLogger');
+const { requireEnv } = require('../lib/env');
 
 const LOG = 'LT_PAY_NOTIFY';
 const LT_BASE_URL = 'https://api.level.travel';
-const LT_API_TOKEN =
-  process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
-const LT_SIGN_KEY = process.env.LT_SIGN_KEY || LT_API_TOKEN;
+// Без fallback-литерала (Б.1). Токен читается лениво — при вызове, с понятной ошибкой, если не задан.
+const getLtToken = () =>
+  process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || requireEnv('LT_API_TOKEN');
+const getLtSignKey = () => process.env.LT_SIGN_KEY || getLtToken();
 
-const LT_HEADERS = {
+const getLtHeaders = () => ({
   Accept: 'application/vnd.leveltravel.v3.7',
-  Authorization: `Token token="${LT_API_TOKEN}"`,
+  Authorization: `Token token="${getLtToken()}"`,
   'Content-Type': 'application/json',
-};
+});
 
 const sha256 = (data) =>
   crypto.createHash('sha256').update(String(data)).digest('hex');
@@ -75,7 +77,7 @@ async function notifyLevelTravelOrderPaid({ order_id, amount }) {
     orderId,
     status,
     resolvedAmount,
-    LT_SIGN_KEY
+    getLtSignKey()
   );
 
   const payload = {
@@ -91,7 +93,7 @@ async function notifyLevelTravelOrderPaid({ order_id, amount }) {
     const response = await axios.post(
       `${LT_BASE_URL}/orders/${orderId}/notify`,
       payload,
-      { headers: LT_HEADERS }
+      { headers: getLtHeaders() }
     );
 
     try {

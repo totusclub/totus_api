@@ -52,7 +52,10 @@ const {
 const HEADERS = getLtHeaders('3.7');
 const HEADERS_3_8 = getLtHeaders('3.8');
 const HEADERS_3_4 = getLtHeaders('3.4');
-const LT_API_TOKEN = process.env.LT_API_TOKEN || process.env.LT_PARTNER_API_KEY || '6a6ca82f341fea2a9d19b0d581c448e7';
+const { requireEnv, env, reportEnv } = require('./lib/env');
+const LT_API_TOKEN = env('LT_API_TOKEN') || env('LT_PARTNER_API_KEY') || null; // без fallback-литерала (Б.1)
+// Partner token LT (с учётом алиаса LT_PARTNER_API_KEY); бросает понятную ошибку, если не задан.
+const ltToken = () => LT_API_TOKEN || requireEnv('LT_API_TOKEN');
 
 // Short in-memory cache so intermittent LT 5xx don't blank the search form.
 let departuresCache = { at: 0, query: null, data: null };
@@ -573,8 +576,8 @@ const generationBankToken = async ()=>{
     try {
         const params = new URLSearchParams();
         params.append("grant_type", "client_credentials");
-        params.append("client_id", "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru");
-        params.append("client_secret", "XMB2l-jkg2RO20(U");
+        params.append("client_id", requireEnv('VTB_CLIENT_ID'));
+        params.append("client_secret", requireEnv('VTB_CLIENT_SECRET'));
         const response = await axios.post(
             "https://open.api.vtb.ru:443/passport/oauth2/token",
             params,
@@ -594,9 +597,9 @@ app.post('/create-package', requireAuth(['user']), async (req, res) => {
 
         const headers = {
             "accept": "application/vnd.leveltravel.v3.7",
-            "authorization": 'Token token="6a6ca82f341fea2a9d19b0d581c448e7"',
+            "authorization": `Token token="${ltToken()}"`,
             "Content-Type": "application/json",
-            "Cookie": "uuid=e5ceff57-c62e-429a-b3c1-8da68bd9d447"
+            ...(env('LT_SESSION_UUID') ? { Cookie: `uuid=${env('LT_SESSION_UUID')}` } : {}),
         };
 
         const buyerEmail =
@@ -1294,8 +1297,8 @@ app.post('/check_pay', async (req, res) => {
         }
 
         const headers = {
-            "X-IBM-Client-Id": "wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru",
-            "Merchant-Authorization": "93f69779-51bd-4787-acd7-c8573cdbdc9c",
+            "X-IBM-Client-Id": requireEnv('VTB_CLIENT_ID'),
+            "Merchant-Authorization": requireEnv('VTB_MERCHANT_AUTH'),
             "Authorization": `Bearer ${tokenData.access_token}`,
             "Content-Type": "application/json",
         };
@@ -1347,7 +1350,7 @@ app.post('/check_pay', async (req, res) => {
                     resolved_order_id,
                     ltStatus,
                     amount,
-                    "6a6ca82f341fea2a9d19b0d581c448e7"
+                    ltToken()
                 );
 
                 const notifyResponse = await axios.post(
@@ -1438,7 +1441,7 @@ app.post('/payment/status', async (req, res) => {
             payload.order_id,
             payload.status,
             payload.amount,
-            "6a6ca82f341fea2a9d19b0d581c448e7"
+            ltToken()
         );
 
 
@@ -1446,7 +1449,7 @@ app.post('/payment/status', async (req, res) => {
             payload.order_id,
             payload.status,
             payload.amount,
-            "6a6ca82f341fea2a9d19b0d581c448e7"
+            ltToken()
         );
 
         const object = {
@@ -1616,6 +1619,7 @@ app.use('/api/admin', footerSocialAdminRoutes);
 app.use('/api', require('./routes/publicFaq.routes'));
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+    reportEnv();
     console.log(`Level Travel proxy API running on port ${PORT}`);
     console.log(`[CALLBACKS] VTB bank:     POST /vtb/callback`);
     console.log(`[CALLBACKS] To Level Travel: POST /level_travel/notify-paid`);

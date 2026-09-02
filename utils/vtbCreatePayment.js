@@ -5,6 +5,7 @@ const { buildVtbPaymentPurpose } = require('./vtbPaymentPurpose');
 const { sendOrderCreatedEmail } = require('./orderEmails');
 const { getStoredPayment, savePaymentToPackage, buildCheckoutUrl } = require('./orderPayment');
 const { logCallback, logCallbackError } = require('./callbackLogger');
+const { requireEnv } = require('../lib/env');
 
 const LOG = 'VTB_PAYMENT';
 const vtbHttpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -13,8 +14,8 @@ const vtbAxiosConfig = { httpsAgent: vtbHttpsAgent };
 async function generationBankToken() {
     const params = new URLSearchParams();
     params.append('grant_type', 'client_credentials');
-    params.append('client_id', 'wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru');
-    params.append('client_secret', 'XMB2l-jkg2RO20(U');
+    params.append('client_id', requireEnv('VTB_CLIENT_ID'));
+    params.append('client_secret', requireEnv('VTB_CLIENT_SECRET'));
 
     const response = await axios.post(
         'https://open.api.vtb.ru:443/passport/oauth2/token',
@@ -111,8 +112,8 @@ async function createVtbPaymentForOrder({
     }
 
     const headers = {
-        'X-IBM-Client-Id': 'wb1a7e7gwrhrvr3.b4b1b7e2-10a2-4e00-af7f-f0337c1b618c@ext.vtb.ru',
-        'Merchant-Authorization': '93f69779-51bd-4787-acd7-c8573cdbdc9c',
+        'X-IBM-Client-Id': requireEnv('VTB_CLIENT_ID'),
+        'Merchant-Authorization': requireEnv('VTB_MERCHANT_AUTH'),
         Authorization: `Bearer ${tokenData.access_token}`,
         'Content-Type': 'application/json',
     };
