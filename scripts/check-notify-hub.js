@@ -92,7 +92,9 @@ function assertNoPersonalData(payload) {
   // 4. Справочники.
   assert.strictEqual(hub.orderStatusText('flight_confirmed'), 'перелёт подтверждён');
   assert.strictEqual(hub.orderStatusText('unknown_state', 'Ждём ответа отеля\nвторая строка'), 'Ждём ответа отеля');
-  assert.strictEqual(hub.orderStatusText('unknown_state', ''), null);
+  // Неизвестное состояние без status_for_client — фиксированный русский текст, а не null
+  // (вызывающий код всегда получает непустую строку и не подставляет свободный `message` LT).
+  assert.strictEqual(hub.orderStatusText('unknown_state', ''), 'статус заказа обновлён');
   assert.strictEqual(hub.detectDocumentKind('Ваучер.pdf'), 'voucher');
   assert.strictEqual(hub.detectDocumentKind('E-ticket 123.pdf'), 'tickets');
   assert.strictEqual(hub.detectDocumentKind('Договор оферты.pdf'), 'agreement');

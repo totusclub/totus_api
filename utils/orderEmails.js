@@ -22,7 +22,8 @@ const orderEmailLocks = new Map();
 
 // Push/in-app рядом с письмом (хаб уведомлений): fire-and-forget, не влияет на отправку письма.
 // Шлём, если письмо ушло или получателя e-mail нет (тогда push — единственный канал); при
-// already_sent — не дублируем.
+// already_sent — не дублируем. Ошибка отправки письма (SMTP) — не дубль, хук всё равно нужен,
+// поэтому вызовы sendTypedOrderEmail оборачиваются в try/catch/finally у каждого из хелперов ниже.
 function notifyHubAfterEmail(orderId, orderRow, emailResult, send) {
     if (emailResult?.skipped && emailResult.reason !== 'no_recipient') return;
     Promise.resolve()
@@ -370,24 +371,38 @@ async function sendTypedOrderEmail(orderId, orderRow, emailType, buildTemplate, 
 
 async function sendOrderCreatedEmail(orderId, orderRow, { payUrl, amount, paymentMinutes = 30 } = {}) {
     const emailType = payUrl ? 'created_payment' : 'created';
-    const result = await sendTypedOrderEmail(orderId, orderRow, emailType, orderCreatedTemplate, {
-        payUrl,
-        amount,
-        paymentMinutes,
-    });
-    notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
-        notifyHub.orderCreated({ userId, orderId, amount })
-    );
+    let result;
+    try {
+        result = await sendTypedOrderEmail(orderId, orderRow, emailType, orderCreatedTemplate, {
+            payUrl,
+            amount,
+            paymentMinutes,
+        });
+    } catch (err) {
+        result = { sent: false, error: err.message };
+        throw err;
+    } finally {
+        notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
+            notifyHub.orderCreated({ userId, orderId, amount })
+        );
+    }
     return result;
 }
 
 async function sendOrderPaidPendingEmail(orderId, orderRow, { amount } = {}) {
-    const result = await sendTypedOrderEmail(orderId, orderRow, 'paid_pending', orderPaidPendingTemplate, {
-        amount,
-    });
-    notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
-        notifyHub.paymentSuccess({ userId, orderId })
-    );
+    let result;
+    try {
+        result = await sendTypedOrderEmail(orderId, orderRow, 'paid_pending', orderPaidPendingTemplate, {
+            amount,
+        });
+    } catch (err) {
+        result = { sent: false, error: err.message };
+        throw err;
+    } finally {
+        notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
+            notifyHub.paymentSuccess({ userId, orderId })
+        );
+    }
     return result;
 }
 
@@ -406,20 +421,27 @@ async function sendSingleDocumentEmail(orderId, orderRow, doc) {
 
     const dedupeKey = buildDocumentEmailDedupeKey(doc);
     const documents = [buildDocumentLink(doc)];
+    const docKind = notifyHub.detectDocumentKind(doc.title);
 
     // One email per document; skip if this document name was already emailed for the order.
-    const result = await sendTypedOrderEmail(orderId, orderRow, 'documents', orderDocumentsTemplate, {
-        dedupeKey,
-        documents,
-        attachments: loadSingleDocumentAttachment(doc),
-    });
-    // Push «Документы готовы»: по одному на вид документа (ваучер/билеты/прочее) за 10 минут
-    // (dedupe в notifyHub); договоры оферты/лицензии не считаем документами тура.
-    const docKind = notifyHub.detectDocumentKind(doc.title);
-    if (docKind !== 'agreement') {
-        notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
-            notifyHub.documentsReady({ userId, orderId, kind: docKind })
-        );
+    let result;
+    try {
+        result = await sendTypedOrderEmail(orderId, orderRow, 'documents', orderDocumentsTemplate, {
+            dedupeKey,
+            documents,
+            attachments: loadSingleDocumentAttachment(doc),
+        });
+    } catch (err) {
+        result = { sent: false, error: err.message };
+        throw err;
+    } finally {
+        // Push «Документы готовы»: по одному на вид документа (ваучер/билеты/прочее) за 10 минут
+        // (dedupe в notifyHub); договоры оферты/лицензии не считаем документами тура.
+        if (docKind !== 'agreement') {
+            notifyHubAfterEmail(orderId, orderRow, result, (userId) =>
+                notifyHub.documentsReady({ userId, orderId, kind: docKind })
+            );
+        }
     }
     return result;
 }

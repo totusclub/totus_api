@@ -12,6 +12,19 @@ const notifyHub = require('../lib/notifyHub');
 const LOG_NOTIFY = 'LT_NOTIFY';
 const LOG_REFUND = 'LT_REFUND';
 
+// Платёжные состояния LT — уже покрыты order_created/payment_* из vtbCallback (тот же факт
+// оплаты приходит от банка); не дублируем пуш об оплате на смену этих state.
+const PAYMENT_STATES_SKIP = new Set([
+  'paid',
+  'wait_payment',
+  'awaiting_payment',
+  'partially_paid',
+  'payment_pending',
+  'pending_payment',
+  'payment_wait',
+  'waiting_payment',
+]);
+
 // Push/in-app в хаб уведомлений по событию LT (fire-and-forget, не влияет на обработку callback).
 // Только реальная смена состояния (changes.state[1]) или событие отмены; документы уходят
 // отдельно — из письма о документе (orderEmails) и из syncOrderFromClient (levelTravelClientOrder).
@@ -19,6 +32,8 @@ function notifyHubForLtEvent({ orderId, orderRow, event, changes, message }) {
   const state = String(getNewStateFromChanges(changes) || '').trim().toLowerCase();
   const eventName = String(event || '').trim().toLowerCase();
   let send = null;
+
+  if (PAYMENT_STATES_SKIP.has(state)) return;
 
   if (
     state.includes('cancel') ||
@@ -33,10 +48,8 @@ function notifyHubForLtEvent({ orderId, orderRow, event, changes, message }) {
     const clientStatus = Array.isArray(changes?.status_for_client)
       ? changes.status_for_client[1]
       : changes?.status_for_client;
-    const statusText = notifyHub.orderStatusText(state, clientStatus || message);
-    if (statusText) {
-      send = (userId) => notifyHub.orderStatus({ userId, orderId, statusText });
-    }
+    const statusText = notifyHub.orderStatusText(state, clientStatus);
+    send = (userId) => notifyHub.orderStatus({ userId, orderId, statusText });
   }
   if (!send) return;
 
