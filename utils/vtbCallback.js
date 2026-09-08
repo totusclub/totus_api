@@ -3,8 +3,21 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { logCallback, logCallbackError } = require('./callbackLogger');
 const { requireEnv } = require('../lib/env');
+const notifyHub = require('../lib/notifyHub');
 
 const LOG = 'VTB_CALLBACK';
+
+// Статусы банка, означающие неуспешный платёж (отклонён / отменён / истёк / ошибка).
+const FAILED_PAY_STATUS_RE = /REJECT|DECLIN|CANCEL|EXPIR|FAIL|ERROR|REVOK/i;
+const isFailedPayStatus = (status) => Boolean(status) && FAILED_PAY_STATUS_RE.test(String(status));
+
+// Fire-and-forget: push «Оплата не прошла» в хаб уведомлений; ошибки только в лог.
+function notifyPaymentFailed(dbOrderId) {
+  db.query('SELECT order_id, user_id, package FROM orders WHERE order_id = ? LIMIT 1', [dbOrderId])
+    .then(([rows]) => (rows[0] ? notifyHub.resolveOrderUserId(rows[0]) : null))
+    .then((userId) => (userId ? notifyHub.paymentFailed({ userId, orderId: dbOrderId }) : null))
+    .catch((err) => console.error('[notify-hub] payment_failed hook failed:', err.message));
+}
 
 const LT_BASE_URL = 'https://api.level.travel';
 // Без fallback-литерала (Б.1). Тот же partner token, что и в остальных LT-модулях (LT_API_TOKEN / алиас LT_PARTNER_API_KEY).
@@ -257,6 +270,11 @@ async function processVtbCallback(payload) {
         logCallback(LOG, 'LT_NOTIFY', 'NOT sent — payment not RECONCILED', {
           pay_status: payStatus,
         });
+        // Push «Оплата не прошла» при отклонённом/просроченном платеже (один раз на смену статуса).
+        // Успешная оплата уходит в хаб из sendOrderPaidPendingEmail (см. utils/orderEmails.js).
+        if (isFailedPayStatus(payStatus) && dbOrder.pay_status !== payStatus) {
+          notifyPaymentFailed(dbOrderId);
+        }
       }
     } else {
       logCallback(LOG, 'LT_NOTIFY', 'NOT sent — order not found in DB');

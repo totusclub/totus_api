@@ -1,5 +1,6 @@
 const db = require('../db');
 const { sendEmail } = require('../utils/yandexCloudEmail');
+const notifyHub = require('../lib/notifyHub');
 
 const REQUEST_TYPES = ['cancel', 'message'];
 const STATUSES = ['new', 'in_progress', 'done', 'rejected'];
@@ -196,6 +197,11 @@ exports.adminUpdateStatus = async (req, res) => {
     }
 
     try {
+        // Автор и прежний статус — для push пользователю (только при реальной смене статуса).
+        const [before] = await db.query(
+            'SELECT user_id, order_id, status FROM order_requests WHERE id = ? LIMIT 1',
+            [id],
+        );
         const [result] = await db.query(
             'UPDATE order_requests SET status = ? WHERE id = ?',
             [status, id],
@@ -204,6 +210,17 @@ exports.adminUpdateStatus = async (req, res) => {
             return res.status(404).json({ error: 'request_not_found' });
         }
         res.status(200).json({ ok: true });
+
+        const request = before[0];
+        if (request?.user_id && request.status !== status) {
+            notifyHub.orderRequestStatus({
+                userId: request.user_id,
+                requestId: id,
+                orderId: request.order_id,
+                status,
+                dedupeKey: `order_request_${id}_${status}`,
+            });
+        }
     } catch (err) {
         console.error('Error updating order request status:', err.message);
         res.status(500).json({ error: 'failed_to_update_request' });
