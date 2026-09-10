@@ -3,6 +3,7 @@
 /**
  * Админка «Отели и номера» — /api/admin/rooms/* (staff-JWT strict). docs/CUSTOM_ROOMS_API.md.
  * Поиск отелей/номеров для админки — через Level.Travel (тот же flow, что у сайта: enqueue → status → grouped_hotels → hotel_rooms).
+ * Бронирования без Level.Travel — /api/admin/rooms/bookings/* (lib/customRooms/bookings.js).
  */
 
 const path = require('path');
@@ -11,6 +12,7 @@ const { ltRequest, logLtError, sendLtAxiosError } = require('../utils/levelTrave
 const store = require('../lib/customRooms/store');
 const { normalizeRule, finalPrice, ruleLabel } = require('../lib/customRooms/pricing');
 const { pickSourceOffers } = require('../lib/customRooms/inject');
+const bookings = require('../lib/customRooms/bookings');
 
 const ERROR_STATUS = { not_found: 404, custom_rooms_not_migrated: 503, source_room_not_found: 404, request_id_required: 400 };
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
@@ -350,8 +352,85 @@ const putSettings = wrap(async (req, res) => {
     res.json({ ok: true, settings: r });
 });
 
+// ---------------------------------------------------------------------------
+// Бронирования без Level.Travel — /api/admin/rooms/bookings/* (бриф §4)
+// ---------------------------------------------------------------------------
+const BOOKING_ERROR_STATUS = { not_found: 404, invalid_status: 409, reason_invalid: 400, refund_amount_invalid: 400, voucher_required: 400, file_required: 400 };
+function bookingFail(res, r) {
+    const { error, ...extra } = r;
+    return res.status(BOOKING_ERROR_STATUS[error] || 400).json({ error, ...extra });
+}
+function bookingResult(res, r, extra) {
+    if (r && r.error) return bookingFail(res, r);
+    return res.json(Object.assign({ ok: true, booking: bookings.serializeAdmin(r.booking) }, extra || {}));
+}
+
+/** GET /bookings?status=all|pending|confirmed|rejected|refund|unpaid&hotel_id&operator&q&from&to&page&limit */
+const bookingsList = wrap(async (req, res) => {
+    const q = req.query || {};
+    const { items, total, page, limit } = await bookings.list(q);
+    res.json({ items, total, page, limit, summary: await bookings.summary() });
+});
+
+const bookingsSummary = wrap(async (req, res) => { res.json({ summary: await bookings.summary() }); });
+
+/** GET /bookings/:id → { booking, roomType, events, order } */
+const bookingGet = wrap(async (req, res) => {
+    const d = await bookings.details(intParam(req.params.id));
+    if (!d) return fail(res, 'not_found');
+    res.json(d);
+});
+
+/** POST /bookings/:id/confirm { hotelBookingRef?, clientMessage?, notify=true } — только из pending_confirmation */
+const bookingConfirm = wrap(async (req, res) => {
+    const b = req.body || {};
+    const r = await bookings.confirm(intParam(req.params.id), { hotelBookingRef: b.hotelBookingRef, clientMessage: b.clientMessage, notify: b.notify !== false && b.notify !== 'false' }, staffOf(req));
+    return bookingResult(res, r);
+});
+
+/** POST /bookings/:id/voucher (multipart поле `voucher`, PDF ≤ 10 МБ) */
+const bookingVoucher = wrap(async (req, res) => {
+    if (!req.file) return fail(res, 'file_required');
+    const r = await bookings.attachVoucher(intParam(req.params.id), req.file, staffOf(req));
+    return bookingResult(res, r);
+});
+
+/** POST /bookings/:id/resend-voucher — письмо с ваучером + push documents_ready */
+const bookingResendVoucher = wrap(async (req, res) => {
+    const r = await bookings.resendVoucher(intParam(req.params.id), staffOf(req));
+    return bookingResult(res, r, r && r.result ? { result: r.result } : null);
+});
+
+/** POST /bookings/:id/reject { reason, message?, refundAmount?, refundDone?, notify=true } — из pending_confirmation */
+const bookingReject = wrap(async (req, res) => {
+    const b = req.body || {};
+    const r = await bookings.reject(intParam(req.params.id), { reason: b.reason, message: b.message, refundAmount: b.refundAmount, refundDone: b.refundDone === true || b.refundDone === 'true', notify: b.notify !== false && b.notify !== 'false' }, staffOf(req));
+    return bookingResult(res, r);
+});
+
+/** POST /bookings/:id/cancel — то же для подтверждённого (confirmed → cancelled) */
+const bookingCancel = wrap(async (req, res) => {
+    const b = req.body || {};
+    const r = await bookings.cancel(intParam(req.params.id), { reason: b.reason || 'other', message: b.message, refundAmount: b.refundAmount, refundDone: b.refundDone === true || b.refundDone === 'true', notify: b.notify !== false && b.notify !== 'false' }, staffOf(req));
+    return bookingResult(res, r);
+});
+
+/** POST /bookings/:id/refund-done { amount?, notify=true } */
+const bookingRefundDone = wrap(async (req, res) => {
+    const b = req.body || {};
+    const r = await bookings.refundDone(intParam(req.params.id), { amount: b.amount, notify: b.notify !== false && b.notify !== 'false' }, staffOf(req));
+    return bookingResult(res, r);
+});
+
+/** POST /bookings/:id/comment { text } */
+const bookingComment = wrap(async (req, res) => {
+    const r = await bookings.comment(intParam(req.params.id), (req.body || {}).text, staffOf(req));
+    return bookingResult(res, r);
+});
+
 module.exports = {
     readyGuard, searchHotels, hotelRooms, list, get, create, update, toggle, remove, duplicate, previewPrice, priceLog, changeLog, orders,
     uploadImage, deleteImage, getSettings, putSettings,
+    bookingsList, bookingsSummary, bookingGet, bookingConfirm, bookingVoucher, bookingResendVoucher, bookingReject, bookingCancel, bookingRefundDone, bookingComment,
     _internal: { validateContent, validateRoomType, diff },
 };
