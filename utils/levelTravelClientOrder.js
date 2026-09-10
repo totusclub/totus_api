@@ -7,6 +7,7 @@ const {
 } = require('./orderDocuments');
 const { logCallback, logCallbackError } = require('./callbackLogger');
 const { requireEnv } = require('../lib/env');
+const notifyHub = require('../lib/notifyHub');
 
 const LOG = 'LT_CLIENT';
 const BASE_URL = 'https://api.level.travel';
@@ -19,6 +20,29 @@ const getHeaders34 = () => ({
   Authorization: `Token token="${getLtToken()}"`,
   'Content-Type': 'application/json',
 });
+
+// Push «Документы готовы» при первом появлении документов тура в синхронизации
+// (fire-and-forget). «Новые» = реально скачанные сейчас (не cached / skipped_duplicate / error);
+// договоры оферты/лицензии не считаем. Повторы за 10 минут гасит dedupe в notifyHub.
+function notifyHubDocumentsReady(orderId, savedDocuments) {
+  const kinds = new Set();
+  for (const doc of savedDocuments || []) {
+    if (!doc?.public_url || doc.error || doc.cached || doc.skipped_duplicate) continue;
+    const kind = notifyHub.detectDocumentKind(doc.title);
+    if (kind !== 'agreement') kinds.add(kind);
+  }
+  if (!kinds.size) return;
+
+  db.query('SELECT order_id, user_id, package FROM orders WHERE order_id = ? LIMIT 1', [orderId])
+    .then(([rows]) => (rows[0] ? notifyHub.resolveOrderUserId(rows[0]) : null))
+    .then(async (userId) => {
+      if (!userId) return;
+      for (const kind of kinds) {
+        await notifyHub.documentsReady({ userId, orderId, kind });
+      }
+    })
+    .catch((err) => console.error('[notify-hub] documents sync hook failed:', err.message));
+}
 
 function resolveAuthToken(orderRow, overrideToken) {
   const explicit = String(overrideToken || '').trim();
@@ -389,6 +413,8 @@ async function syncOrderFromClient(orderId, authToken, options = {}) {
   pkg = applyLocalDocumentUrlsToPackage(orderId, pkg, documents);
 
   const packageUpdated = await saveOrderPackageToDb(orderId, pkg, authToken, orderState);
+
+  notifyHubDocumentsReady(orderId, savedDocuments);
 
   return {
     success: true,

@@ -7,9 +7,57 @@ const {
   shouldDownloadDocuments,
 } = require('./levelTravelClientOrder');
 const { logCallback, logCallbackError, logCallbackBanner } = require('./callbackLogger');
+const notifyHub = require('../lib/notifyHub');
 
 const LOG_NOTIFY = 'LT_NOTIFY';
 const LOG_REFUND = 'LT_REFUND';
+
+// Платёжные состояния LT — уже покрыты order_created/payment_* из vtbCallback (тот же факт
+// оплаты приходит от банка); не дублируем пуш об оплате на смену этих state.
+const PAYMENT_STATES_SKIP = new Set([
+  'paid',
+  'wait_payment',
+  'awaiting_payment',
+  'partially_paid',
+  'payment_pending',
+  'pending_payment',
+  'payment_wait',
+  'waiting_payment',
+]);
+
+// Push/in-app в хаб уведомлений по событию LT (fire-and-forget, не влияет на обработку callback).
+// Только реальная смена состояния (changes.state[1]) или событие отмены; документы уходят
+// отдельно — из письма о документе (orderEmails) и из syncOrderFromClient (levelTravelClientOrder).
+function notifyHubForLtEvent({ orderId, orderRow, event, changes, message }) {
+  const state = String(getNewStateFromChanges(changes) || '').trim().toLowerCase();
+  const eventName = String(event || '').trim().toLowerCase();
+  let send = null;
+
+  if (PAYMENT_STATES_SKIP.has(state)) return;
+
+  if (
+    state.includes('cancel') ||
+    state === 'annulled' ||
+    state === 'rejected' ||
+    eventName.includes('cancel')
+  ) {
+    send = (userId) => notifyHub.orderCancelled({ userId, orderId });
+  } else if (state === 'confirmed' || state === 'booked') {
+    send = (userId) => notifyHub.orderConfirmed({ userId, orderId });
+  } else if (state && state !== 'documents_sent') {
+    const clientStatus = Array.isArray(changes?.status_for_client)
+      ? changes.status_for_client[1]
+      : changes?.status_for_client;
+    const statusText = notifyHub.orderStatusText(state, clientStatus);
+    send = (userId) => notifyHub.orderStatus({ userId, orderId, statusText });
+  }
+  if (!send) return;
+
+  Promise.resolve()
+    .then(() => notifyHub.resolveOrderUserId(orderRow))
+    .then((userId) => (userId ? send(userId) : null))
+    .catch((err) => console.error('[notify-hub] LT event hook failed:', err.message));
+}
 
 const PARTNER_API_KEY =
   process.env.PARTNER_API_KEY || '589e52d73074435f9fc8202b7ec80673';
@@ -505,6 +553,12 @@ async function processOrderNotify(body) {
           error: emailErr.message,
         });
       }
+
+      // Хаб уведомлений: подтверждение / отмена / смена статуса. Дубликаты event_reference
+      // сюда не доходят (см. isDuplicate выше), повтор documents_sent — только документы.
+      if (!retryDocsOnly) {
+        notifyHubForLtEvent({ orderId: order_id, orderRow: order, event, changes, message });
+      }
     } catch (err) {
       orderUpdateError = err.message;
       logCallbackError(LOG_NOTIFY, 'DB', 'Order update failed — will still save event', {
@@ -607,6 +661,19 @@ async function processOrderRefund(body) {
       [amount, timestamp, order_id]
     );
     logCallback(LOG_REFUND, 'DB', 'Order refund updated', { order_id, refund_amount: amount });
+    // Хаб уведомлений: возврат средств — как смена статуса (сумму и ПД не передаём).
+    notifyHub
+      .resolveOrderUserId(order)
+      .then((userId) =>
+        userId
+          ? notifyHub.orderStatus({
+              userId,
+              orderId: order_id,
+              statusText: notifyHub.ORDER_STATE_LABELS_RU.refunded,
+            })
+          : null
+      )
+      .catch((err) => console.error('[notify-hub] LT refund hook failed:', err.message));
   } else {
     logCallback(LOG_REFUND, 'DB', 'Order NOT found — refund logged only', { order_id });
   }
