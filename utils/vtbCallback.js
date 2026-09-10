@@ -19,6 +19,15 @@ function notifyPaymentFailed(dbOrderId) {
     .catch((err) => console.error('[notify-hub] payment_failed hook failed:', err.message));
 }
 
+// Внутренний ли заказ (бронирование наших Room Type без Level.Travel). Никогда не бросает.
+async function isInternalOrder(orderId) {
+  try {
+    return await require('../lib/customRooms/bookings').isInternalOrder(orderId);
+  } catch (err) {
+    return false;
+  }
+}
+
 const LT_BASE_URL = 'https://api.level.travel';
 // Без fallback-литерала (Б.1). Тот же partner token, что и в остальных LT-модулях (LT_API_TOKEN / алиас LT_PARTNER_API_KEY).
 const getLtToken = () =>
@@ -243,7 +252,15 @@ async function processVtbCallback(payload) {
         });
       }
 
-      if (payStatus === 'RECONCILED' && !duplicate) {
+      if (payStatus === 'RECONCILED' && !duplicate && (await isInternalOrder(dbOrderId))) {
+        // Наше бронирование без Level.Travel (lib/customRooms/bookings.js): LT не уведомляем,
+        // письма/push — свои (onPaid), sendOrderPaidPendingEmail не подходит по тексту.
+        ltNotify = { result: 'skipped', reason: 'internal_order' };
+        logCallback(LOG, 'LT_NOTIFY', 'NOT sent — internal order (custom room booking)', { order_id: dbOrderId });
+        require('../lib/customRooms/bookings')
+          .onPaid(dbOrderId, amount, { source: 'vtb_callback' })
+          .catch((err) => logCallbackError(LOG, 'BOOKING', 'Internal booking onPaid failed', { order_id: dbOrderId, error: err.message }));
+      } else if (payStatus === 'RECONCILED' && !duplicate) {
         ltNotify = await notifyLevelTravelPaid(dbOrderId, amount);
 
         try {
@@ -274,6 +291,10 @@ async function processVtbCallback(payload) {
         // Успешная оплата уходит в хаб из sendOrderPaidPendingEmail (см. utils/orderEmails.js).
         if (isFailedPayStatus(payStatus) && dbOrder.pay_status !== payStatus) {
           notifyPaymentFailed(dbOrderId);
+          // внутреннее бронирование: событие payment_failed в таймлайне (статус не меняем)
+          isInternalOrder(dbOrderId)
+            .then((yes) => (yes ? require('../lib/customRooms/bookings').onPaymentFailed(dbOrderId, payStatus) : null))
+            .catch(() => {});
         }
       }
     } else {
@@ -307,6 +328,12 @@ async function processVtbCallback(payload) {
         pay_status: payStatus,
         refund_amount: amount,
       });
+      // Внутреннее бронирование: отметить возврат выполненным (возвраты делаются вручную, это только запись).
+      if (await isInternalOrder(dbOrderId)) {
+        await require('../lib/customRooms/bookings')
+          .onBankRefund(dbOrderId, amount)
+          .catch((err) => logCallbackError(LOG, 'BOOKING', 'Internal booking refund mark failed', { order_id: dbOrderId, error: err.message }));
+      }
     } else {
       logCallback(LOG, 'DB', 'Refund callback — order NOT found in DB');
     }

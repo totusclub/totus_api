@@ -1,6 +1,7 @@
 // Миграция наших Room Type: node scripts/run-custom-rooms-migration.js
-// Таблицы custom_room_* + 4 колонки в orders (идемпотентно). После неё: pm2 restart api.
-// План: claude/CUSTOM_ROOMS_PLAN_RU.md §4.
+// Таблицы custom_room_* + 4 колонки в orders + бронирования без Level.Travel
+// (custom_room_bookings, custom_room_booking_events, 3 колонки в custom_room_package_map) — идемпотентно.
+// После неё: pm2 restart api. План: claude/CUSTOM_ROOMS_PLAN_RU.md §4, бриф бронирований §1.
 'use strict';
 
 const db = require('../db');
@@ -118,6 +119,78 @@ const DDL = [
     expires_at DATETIME NOT NULL,
     KEY idx_expires (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`,
+
+  // Бронирования наших Room Type без Level.Travel (order_id = 900000000 + id)
+  `CREATE TABLE IF NOT EXISTS custom_room_bookings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id VARCHAR(32) NOT NULL,
+    user_id INT NULL,
+    room_type_id INT NOT NULL,
+    hotel_id INT NULL,
+    hotel_name VARCHAR(255) NULL,
+    hotel_stars TINYINT NULL,
+    hotel_city VARCHAR(128) NULL,
+    hotel_country VARCHAR(128) NULL,
+    room_name VARCHAR(255) NULL,
+    source_room_name VARCHAR(255) NULL,
+    source_offer_id VARCHAR(64) NULL,
+    lt_package_id VARCHAR(64) NULL,
+    operator_id INT NULL,
+    operator_name VARCHAR(128) NULL,
+    meal VARCHAR(16) NULL,
+    meal_name VARCHAR(64) NULL,
+    check_in DATE NULL,
+    check_out DATE NULL,
+    nights INT NULL,
+    adults INT NULL,
+    kids INT NULL,
+    tourists_json JSON NULL,
+    contact_json JSON NULL,
+    package_snapshot JSON NULL,
+    provider_price DECIMAL(12,2) NULL,
+    final_price DECIMAL(12,2) NULL,
+    price_rule JSON NULL,
+    payment_status ENUM('pending','paid','failed','refund_pending','refunded','partially_refunded') NOT NULL DEFAULT 'pending',
+    paid_at DATETIME NULL,
+    paid_amount DECIMAL(12,2) NULL,
+    status ENUM('pending_payment','pending_confirmation','confirmed','rejected','cancelled') NOT NULL DEFAULT 'pending_payment',
+    confirmed_at DATETIME NULL,
+    confirmed_by VARCHAR(128) NULL,
+    hotel_booking_ref VARCHAR(128) NULL,
+    voucher_path VARCHAR(512) NULL,
+    voucher_url VARCHAR(512) NULL,
+    voucher_sent_at DATETIME NULL,
+    rejected_at DATETIME NULL,
+    rejected_by VARCHAR(128) NULL,
+    reject_reason ENUM('no_availability','price_changed','data_error','other') NULL,
+    reject_message TEXT NULL,
+    refund_amount DECIMAL(12,2) NULL,
+    refund_method ENUM('manual') NULL,
+    refund_status ENUM('pending','done') NULL,
+    refund_at DATETIME NULL,
+    refund_by VARCHAR(128) NULL,
+    client_message TEXT NULL,
+    staff_comment TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_order (order_id),
+    KEY idx_status (status, id),
+    KEY idx_user (user_id),
+    KEY idx_rt (room_type_id),
+    KEY idx_hotel (hotel_id),
+    KEY idx_refund (refund_status)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`,
+
+  `CREATE TABLE IF NOT EXISTS custom_room_booking_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    booking_id INT NOT NULL,
+    type VARCHAR(32) NOT NULL,
+    staff_id INT NULL,
+    staff_name VARCHAR(128) NULL,
+    payload JSON NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_booking (booking_id, id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`,
 ];
 
 const ORDER_COLUMNS = [
@@ -127,19 +200,32 @@ const ORDER_COLUMNS = [
   ['price_rule', 'JSON NULL'],
 ];
 
+// custom_room_package_map: снимок пакета (ответ package_details/actualize с нашими ценами) — из него
+// собирается заказ без Level.Travel; hotel_id и meal — для карточки бронирования.
+const PACKAGE_MAP_COLUMNS = [
+  ['hotel_id', 'INT NULL'],
+  ['meal', 'VARCHAR(16) NULL'],
+  ['package_snapshot', 'JSON NULL'],
+];
+
+async function addColumns(table, columns) {
+  const [cols] = await db.query(`SHOW COLUMNS FROM ${table}`);
+  const have = new Set(cols.map((c) => c.Field));
+  for (const [col, def] of columns) {
+    if (have.has(col)) { console.log(`= ${table}.${col} exists`); continue; }
+    await db.query(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    console.log(`✅ ${table}.${col}`);
+  }
+}
+
 async function run() {
   for (const sql of DDL) {
     const name = /TABLE IF NOT EXISTS (\w+)/.exec(sql)[1];
     await db.query(sql);
     console.log(`✅ ${name}`);
   }
-  const [cols] = await db.query('SHOW COLUMNS FROM orders');
-  const have = new Set(cols.map((c) => c.Field));
-  for (const [col, def] of ORDER_COLUMNS) {
-    if (have.has(col)) { console.log(`= orders.${col} exists`); continue; }
-    await db.query(`ALTER TABLE orders ADD COLUMN ${col} ${def}`);
-    console.log(`✅ orders.${col}`);
-  }
+  await addColumns('orders', ORDER_COLUMNS);
+  await addColumns('custom_room_package_map', PACKAGE_MAP_COLUMNS);
   const [idx] = await db.query("SHOW INDEX FROM orders WHERE Key_name = 'idx_custom_room_type'");
   if (!idx.length) { await db.query('ALTER TABLE orders ADD INDEX idx_custom_room_type (custom_room_type_id)'); console.log('✅ orders.idx_custom_room_type'); }
   console.log('Done. Now: pm2 restart api');
