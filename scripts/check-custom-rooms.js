@@ -115,3 +115,10 @@ for (const p2 of ['/grouped-hotels', '/references/hotels', '/api/admin/rooms/roo
         }, 10);
     }, 10);
 }
+
+// Express 5: подмена query через req.url
+{
+    const req = { url: '/packages/package_details?request_id=abc&tour_id=t7-1-x', query: {} };
+    flow.setQueryParam(req, 'tour_id', '9001');
+    assert.strictEqual(req.url, '/packages/package_details?request_id=abc&tour_id=9001');
+}

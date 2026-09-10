@@ -117,13 +117,13 @@ const hotelRooms = wrap(async (req, res) => {
     const ours = rts.map((rt) => {
         const src = byRoom.get(Number(rt.sourceRoomId));
         const preview = [];
-        let status = 'source_missing';
+        let status = rt.active ? 'source_missing' : 'inactive';
         if (src && rt.rule) {
             for (const { meal, offer } of pickSourceOffers(src, rt)) {
                 const p = finalPrice(offer.price, rt.rule);
                 preview.push({ offer_id: String(offer.id), meal, operator_id: offer.operator_id, operator_name: offer.operator_name, provider_price: Number(offer.price), final_price: p.final, margin: p.margin, margin_percent: p.marginPercent, margin_clamped: p.marginClamped });
             }
-            if (preview.length) status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : (rt.active ? 'replacing' : 'inactive');
+            if (preview.length && rt.active) status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
         }
         return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, status, preview };
     });
