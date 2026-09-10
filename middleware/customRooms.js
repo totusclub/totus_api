@@ -7,11 +7,17 @@
  * Сами прокси не меняются: middleware правит запрос до обработчика (tour_id, суммы платежей)
  * и оборачивает res.json, чтобы переписать ответ LT перед отправкой. Любая ошибка нашей
  * логики → в лог, клиент получает оригинальный ответ.
+ *
+ * Бронирования без Level.Travel (бриф §2): для пакетов из карты custom_room_package_map middleware
+ * отвечает САМ (без next()) на prebuild/prebook/flights (снимок пакета) и create-package (заказ у нас);
+ * для внутренних заказов (order_id > 900000000) — на check_pay (VTB без LT notify), client/orders/:id,
+ * client/orders/:id/sync, level_travel/notify-paid, payment/status. LT для них не вызывается нигде.
  */
 
 const store = require('../lib/customRooms/store');
 const { injectRooms } = require('../lib/customRooms/inject');
 const flow = require('../lib/customRooms/packageFlow');
+const internal = require('../lib/customRooms/internalOrders');
 
 const SEARCH_TYPE_HOTEL_CODES = String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '2').split(',').map((s) => s.trim());
 
@@ -77,16 +83,44 @@ async function handle(req, res, next) {
         return next();
     }
 
-    if ((method === 'GET' && path === '/packages/actualize') || (method === 'POST' && (path === '/orders/prebuild' || path === '/packages/prebook' || path === '/packages/flights'))) {
+    if (method === 'GET' && path === '/packages/actualize') {
         const map = await flow.beforePackageStep(req);
         if (map) wrapJson(res, (body) => flow.afterPackageStep(body, map));
         return next();
     }
 
+    // Бронирование без Level.Travel: для пакета из карты prebuild/prebook/flights отвечаем сами (снимок пакета).
+    if (method === 'POST' && (path === '/orders/prebuild' || path === '/packages/prebook' || path === '/packages/flights')) {
+        const map = await flow.beforePackageStep(req);
+        if (!map) return next();
+        const synth = flow.synthesizePackageStep(map);
+        if (!synth) return res.status(410).json({ success: false, error: 'offer_expired', message: 'Предложение устарело — выберите номер заново' });
+        return res.status(200).json(synth);
+    }
+
+    // Бронирование без Level.Travel: заказ у нас (orders + custom_room_bookings), оплата VTB, LT /orders/create не вызывается.
     if (method === 'POST' && path === '/create-package') {
         const map = await flow.beforeCreatePackage(req);
-        if (map) wrapJson(res, (body) => flow.afterCreatePackage(body, map));
+        if (!map) return next();
+        return internal.createPackage(req, res, map);
+    }
+
+    if (method === 'POST' && path === '/check_pay') {
+        if (await internal.checkPay(req, res)) return;
         return next();
+    }
+
+    if (method === 'POST' && (path === '/level_travel/notify-paid' || path === '/payment/status')) {
+        if (await internal.skipLtNotify(req, res)) return;
+        return next();
+    }
+
+    {
+        const m = /^\/client\/orders\/([^/]+)(\/sync)?$/.exec(path);
+        if (m && ((method === 'GET' && !m[2]) || (method === 'POST' && m[2]))) {
+            if (await internal.clientOrder(req, res, decodeURIComponent(m[1]), { sync: Boolean(m[2]) })) return;
+            if (method === 'POST') return next();
+        }
     }
 
     if ((method === 'POST' && path === '/vtb/create-order') || (method === 'GET' && /^\/orders\/[^/]+\/payment$/.test(path))) {
@@ -106,7 +140,7 @@ async function handle(req, res, next) {
     return next();
 }
 
-const WATCHED = /^\/(start-search|hotels-rooms|packages\/(package_details|actualize|prebook|flights)|orders\/prebuild|create-package|vtb\/create-order|orders(\/[^/]+\/payment)?|user\/orders|client\/orders(\/[^/]+)?)$/;
+const WATCHED = /^\/(start-search|hotels-rooms|packages\/(package_details|actualize|prebook|flights)|orders\/prebuild|create-package|check_pay|level_travel\/notify-paid|payment\/status|vtb\/create-order|orders(\/[^/]+\/payment)?|user\/orders|client\/orders(\/[^/]+(\/sync)?)?)$/;
 
 function customRoomsMiddleware(req, res, next) {
     if (!WATCHED.test(req.path || '')) return next();
