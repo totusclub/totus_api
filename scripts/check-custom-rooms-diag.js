@@ -185,7 +185,7 @@ async function diagChecks() {
     assert.ok(d.hints.some((h) => /#10 .*только при поиске hotel/.test(h)), 'подсказка packageTypes');
     assert.ok(d.hints.some((h) => /#10 .*ни один запрос \/hotels-rooms/.test(h)), 'подсказка «ещё не проверялся»');
     assert.ok(Array.isArray(d.events) && d.events.length > 0 && typeof d.appJsHooks.middleware.hotelsRoomsSeen === 'number' && d.appJsHooks.middleware.startedAt);
-    assert.strictEqual(d.env.hotelSearchTypeCodes, '2');
+    assert.strictEqual(d.env.hotelSearchTypeCodes, '1'); // LT: 0 — package, 1 — hotel
     store.getSettings = async () => stub.settings;
     // ready, но колонок диагностики нет — подсказка повторить миграцию
     store.getReadyState = async () => ({ ready: true, disabledReason: null, missingTables: [], missingColumns: ['custom_room_types.last_skip_reason (диагностика, необязательно)'], diagColumns: false, checkedAt: 'x', error: null });
