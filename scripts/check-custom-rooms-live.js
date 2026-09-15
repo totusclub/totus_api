@@ -112,7 +112,7 @@ async function checks() {
     out = await inject.injectRooms(ltBody(), ctx('hotel'));
     assert.ok(ours(out, 1));
 
-    // 3. Room Type v1 (правило −10 %, operator_ids [78]) — как #5 на проде: цена 233 096, предложение Level.Travel заменено
+    // 3. Room Type v1 (правило −10 %, operator_ids [78]) — как #5 на проде: цена 233 096, оригинал Level.Travel остаётся рядом
     reset(); stub.rts = [rtRuleV1()];
     out = await inject.injectRooms(ltBody(), ctx('package'));
     v = ours(out, 5);
@@ -120,9 +120,9 @@ async function checks() {
     assert.strictEqual(v.offers.UAI[0].price, 233096, '258 996 − 10 %');
     assert.strictEqual(v.offers.UAI[0].operator_id, 990005);
     assert.strictEqual(v.offers.UAI[0].lt_extras.totus.mode, 'rule');
-    assert.strictEqual(offersOf(out.result[0]).length, 6, 'предложение Level.Travel (78) удалено из источника');
-    assert.ok(!offersOf(out.result[0]).some((o) => o.operator_id === 78));
-    assert.strictEqual(out.result[0].min_price, 273157, 'минимум источника пересчитан (Biblio Globus)');
+    assert.strictEqual(offersOf(out.result[0]).length, 7, 'предложения источника не тронуты (с 15.09 показываются оба)');
+    assert.ok(offersOf(out.result[0]).some((o) => o.operator_id === 78), 'оригинал Level.Travel (78) остался');
+    assert.strictEqual(out.result[0].min_price, 258996, 'минимум источника не изменился');
     assert.strictEqual(out.filters.meals.find((m) => m.id === 'UAI').min_price, 233096);
 
     // 4. номер с room.id = 0 (hash-ID) не мешает: Room Type на источник 0 создать нельзя, но связь других номеров по id не ломается
