@@ -1,6 +1,7 @@
 // Проверка диагностики наших Room Type без БД и сети: node scripts/check-custom-rooms-diag.js
 // Причины пропуска в inject.js (no_pricing / search_type / source_room_missing / no_offers / offer_map_failed),
-// запасная связь по названию номера, сериализация last_skip_reason, счётчики middleware, ответ GET /api/admin/rooms/diagnostics.
+// связь только по room.id (v3: запасной связи по названию нет), сериализация last_skip_reason, счётчики middleware,
+// ответ GET /api/admin/rooms/diagnostics.
 // Основные проверки витрины/бронирований — scripts/check-custom-rooms.js.
 'use strict';
 const assert = require('assert');
@@ -60,8 +61,9 @@ async function injectReasons() {
     // вставлена: id совпал, hotel_id строкой, search_type package (как у сайта)
     stub.rts = [fixedRt()];
     let out = await inject.injectRooms(ltData([mkRoom()]), ctx());
-    assert.strictEqual(out.result.length, 2, 'вставлена при package и строковом hotel_id'); assert.strictEqual(out.result[1].ID, 'totus-9');
-    assert.strictEqual(out.result[1].offers.AI[0].start_date, '2026-10-12', 'клон сохраняет start_date (сайт фильтрует по дате)'); assert.strictEqual(out.result[1].offers.AI[0].nights_count, 7);
+    assert.strictEqual(out.result.length, 1, 'v3: отдельная комната не добавляется'); assert.ok(inject.isArlekinoOffer(out.result[0].offers.AI[0]), 'наше предложение внутри номера первым (package, строковый hotel_id)');
+    assert.strictEqual(out.result[0].offers.AI[0].start_date, '2026-10-12', 'клон сохраняет start_date (сайт фильтрует по дате)'); assert.strictEqual(out.result[0].offers.AI[0].nights_count, 7);
+    assert.strictEqual(out.result[0].offers.AI.length, 3); assert.strictEqual(out.result[0].min_price, 1);
     assert.strictEqual(stub.checked.length, 0, 'вставлена — причина не пишется (сбрасывает touchLastSeen)'); assert.strictEqual(stub.seen.length, 1);
     assert.strictEqual(diag.stats.hotelsRoomsInjected, 1, 'счётчик вставок');
 
@@ -71,16 +73,17 @@ async function injectReasons() {
     assert.strictEqual(out.result.length, 1);
     assert.strictEqual(lastSkip(), 'source_room_missing (source 999; ids in result: 501)');
 
-    // запасная связь по названию: LT отдал тот же номер под другим room.id
+    // v3: связь ТОЛЬКО по room.id — тот же номер под другим room.id (и с тем же названием) не источник → source_room_missing
     stub.checked = []; stub.seen = [];
-    stub.rts = [fixedRt({ sourceRoomId: 777 })];
-    out = await inject.injectRooms(ltData([mkRoom()]), ctx('hotel'));
-    assert.strictEqual(out.result.length, 2, 'id не совпал, название совпало → вставлена'); assert.strictEqual(stub.checked.length, 0);
-    assert.deepStrictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: '  deluxe room   sea view ' })), { idx: 0, by: 'name' }, 'регистр/пробелы не важны');
-    assert.deepStrictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: null, sourceSnapshot: { name_en: 'DELUXE' } })), { idx: 0, by: 'name' }, 'по name_en из снимка');
-    assert.strictEqual(inject.findSourceIndex([mkRoom(), { ...mkRoom(), room: { id: 502, name_ru: 'Deluxe Room Sea View' } }], new Map([[501, 0], [502, 1]]), fixedRt({ sourceRoomId: 777 })), null, 'два номера с таким названием — не угадываем');
-    assert.strictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: null, sourceSnapshot: null })), null, 'нет названия — нет связи');
+    stub.rts = [fixedRt({ sourceRoomId: 777 })]; // sourceRoomName 'Deluxe Room Sea View' совпадает с номером 501
+    const body = ltData([mkRoom()]);
+    out = await inject.injectRooms(body, ctx('hotel'));
+    assert.strictEqual(out, body, 'id не совпал, название совпало → НЕ вставлена'); assert.strictEqual(stub.checked.length, 1);
+    assert.strictEqual(lastSkip(), 'source_room_missing (source 777; ids in result: 501)');
+    assert.strictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: '  deluxe room   sea view ' })), null, 'по названию не ищем');
+    assert.strictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: null, sourceSnapshot: { name_en: 'DELUXE', name_ru: 'Deluxe Room Sea View' } })), null, 'и по снимку не ищем');
     assert.deepStrictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt()), { idx: 0, by: 'id' });
+    assert.deepStrictEqual(inject.findSourceIndex([mkRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: '501' })), { idx: 0, by: 'id' }, 'строковый source_room_id из БД');
 
     // no_offers: нет предложений / нет нужного питания
     stub.rts = [fixedRt()];
@@ -98,7 +101,7 @@ async function injectReasons() {
     out = await inject.injectRooms(ltData([mkRoom()]), ctx('package'));
     assert.strictEqual(lastSkip(), 'search_type (package; packageTypes [hotel])');
     out = await inject.injectRooms(ltData([mkRoom()]), ctx('hotel'));
-    assert.strictEqual(out.result.length, 2, 'packageTypes [hotel] при hotel — вставлена');
+    assert.ok(inject.isArlekinoOffer(out.result[0].offers.AI[0]), 'packageTypes [hotel] при hotel — вставлена');
 
     // no_pricing: раньше отфильтровывалось молча в store.activeRoomTypesForHotel
     stub.rts = [fixedRt({ pricingMode: 'rule', fixedPrice: null, pricing: null, rule: null })];
@@ -107,21 +110,28 @@ async function injectReasons() {
     // rule-режим: pricing null, но rule есть → считается по правилу (обратная совместимость)
     stub.rts = [fixedRt({ pricingMode: 'rule', fixedPrice: null, pricing: null, rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) })];
     out = await inject.injectRooms(ltData([mkRoom()]), ctx());
-    assert.strictEqual(out.result[1].offers.AI[0].price, 87750);
+    assert.strictEqual(out.result[0].offers.AI[0].price, 87750); assert.ok(inject.isArlekinoOffer(out.result[0].offers.AI[0]));
 
     // сбой карты предложений → исключение (клиент получит оригинал LT) + причина offer_map_failed
     stub.checked = []; stub.rts = [fixedRt()];
     const okSave = store.saveOfferMap;
     store.saveOfferMap = async () => { throw new Error('Data too long'); };
-    await assert.rejects(() => inject.injectRooms(ltData([mkRoom()]), ctx()), /Data too long/);
+    const failBody = ltData([mkRoom()]);
+    await assert.rejects(() => inject.injectRooms(failBody, ctx()), /Data too long/);
     store.saveOfferMap = okSave;
     assert.strictEqual(lastSkip(), 'offer_map_failed (Data too long)');
+    assert.strictEqual(failBody.result[0].offers.AI.length, 2, 'откат: в теле (его отдаст middleware) наших предложений нет'); assert.strictEqual(failBody.result[0].min_price, 97500); assert.strictEqual(failBody.result[0].lt_extras.totus, undefined);
 
     // несколько Room Type одного отеля: у каждой своя строка/причина
     stub.checked = [];
     stub.rts = [fixedRt({ id: 9 }), fixedRt({ id: 10, sourceRoomId: 999, sourceRoomName: 'Other' })];
     out = await inject.injectRooms(ltData([mkRoom()]), ctx());
-    assert.strictEqual(out.result.length, 2); assert.deepStrictEqual(stub.checked.map((c) => c.id), [10]);
+    assert.strictEqual(out.result.length, 1); assert.strictEqual(out.result[0].lt_extras.totus.customOffers, 1); assert.deepStrictEqual(stub.checked.map((c) => c.id), [10]);
+    // два Room Type на один номер: оба внутри, порядок по sort_order, customOffers суммируется, roomTypeId — первый
+    stub.rts = [fixedRt({ id: 9, sortOrder: 0 }), fixedRt({ id: 10, sortOrder: 1, pricing: normalizePricing({ mode: 'fixed', fixedPrice: 2 }) })];
+    out = await inject.injectRooms(ltData([mkRoom()]), ctx());
+    assert.strictEqual(out.result.length, 1); assert.deepStrictEqual(out.result[0].offers.AI.map((o) => o.price), [1, 2, 98900, 97500]);
+    assert.deepStrictEqual(out.result[0].lt_extras.totus, { roomTypeId: 9, customOffers: 2, sourceRoomId: 501 });
     const lines = diag.snapshot().events.map((e) => e.line);
     assert.ok(lines.some((l) => /^\[custom-rooms\] hotel 123: rt 9 — injected \(1 offer\(s\), fixed, source room 501\)$/.test(l)), `строка injected: ${lines.slice(-3).join(' | ')}`);
     assert.ok(lines.some((l) => /^\[custom-rooms\] hotel 123: rt 10 — skipped:source_room_missing/.test(l)), 'строка skipped');
@@ -158,7 +168,7 @@ async function diagChecks() {
     res.json(ltData([mkRoom()]));
     await new Promise((r) => setTimeout(r, 20));
     store.isReady = okReady;
-    assert.strictEqual(sent.length, 1); assert.strictEqual(sent[0].result.length, 2, 'ответ сайту с нашей комнатой');
+    assert.strictEqual(sent.length, 1); assert.strictEqual(sent[0].result.length, 1, 'ответ сайту: один номер'); assert.ok(inject.isArlekinoOffer(sent[0].result[0].offers.AI[0]), 'с нашим предложением внутри');
     assert.strictEqual(diag.stats.lastHotelsRoomsHotelId, '123'); assert.strictEqual(diag.stats.lastHotelsRoomsSearchType, 'package'); assert.ok(diag.stats.lastInjectAt);
 
     // GET /diagnostics: DISABLED → подсказка про миграцию; ready → подсказки по каждой Room Type
