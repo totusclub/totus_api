@@ -10,8 +10,8 @@ const path = require('path');
 const fs = require('fs');
 const { ltRequest, logLtError, sendLtAxiosError } = require('../utils/levelTravelHttp');
 const store = require('../lib/customRooms/store');
-const { normalizeRule, finalPrice, ruleLabel } = require('../lib/customRooms/pricing');
-const { pickSourceOffers } = require('../lib/customRooms/inject');
+const { normalizeRule, ruleLabel, normalizePricing, computePrice, pricingLabel, PRICING_MODES, FIXED_UNITS } = require('../lib/customRooms/pricing');
+const { pickSourceOffers, pickTemplateOffers, operatorIdOf, operatorNameOf } = require('../lib/customRooms/inject');
 const bookings = require('../lib/customRooms/bookings');
 
 const ERROR_STATUS = { not_found: 404, custom_rooms_not_migrated: 503, source_room_not_found: 404, request_id_required: 400 };
@@ -97,6 +97,17 @@ function summarizeOffers(room) {
     return out;
 }
 
+function nightsOf(o) { const n = Number(o && o.nights_count); return Number.isFinite(n) && n > 0 ? n : null; }
+
+/** v2: превью наших предложений по выдаче: шаблоны (самое дешёвое по питанию) × режим цены. */
+function previewRows(src, rt) {
+    if (!src || !rt.pricing) return [];
+    return pickTemplateOffers(src, rt).map(({ meal, offer }) => {
+        const p = computePrice(offer.price, nightsOf(offer), rt.pricing);
+        return { offer_id: String(offer.id), meal, operator_id: offer.operator_id, operator_name: offer.operator_name, nights_count: nightsOf(offer), provider_price: Number(offer.price), final_price: p.final, margin: p.margin, margin_percent: p.marginPercent, margin_clamped: p.marginClamped, mode: rt.pricing.mode, our_operator_id: operatorIdOf(rt), our_operator_name: operatorNameOf(rt) };
+    });
+}
+
 /** GET /hotels/:hotelId/rooms?request_id — номера LT по операторам + наши Room Type с расчётом по этой выдаче. */
 const hotelRooms = wrap(async (req, res) => {
     const hotelId = intParam(req.params.hotelId);
@@ -116,18 +127,17 @@ const hotelRooms = wrap(async (req, res) => {
     const settings = await store.getSettings();
     const byRoom = new Map(rooms.map((r) => [Number(r.room && r.room.id), r]));
 
+    // v2: наши Room Type показываем под исходным номером всегда, когда номер есть в выдаче (оператор LT не важен)
     const ours = rts.map((rt) => {
         const src = byRoom.get(Number(rt.sourceRoomId));
-        const preview = [];
+        const preview = previewRows(src, rt);
         let status = rt.active ? 'source_missing' : 'inactive';
-        if (src && rt.rule) {
-            for (const { meal, offer } of pickSourceOffers(src, rt)) {
-                const p = finalPrice(offer.price, rt.rule);
-                preview.push({ offer_id: String(offer.id), meal, operator_id: offer.operator_id, operator_name: offer.operator_name, provider_price: Number(offer.price), final_price: p.final, margin: p.margin, margin_percent: p.marginPercent, margin_clamped: p.marginClamped });
-            }
-            if (preview.length && rt.active) status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
+        if (src && preview.length && rt.active) {
+            if (rt.pricing && rt.pricing.mode === 'fixed') status = 'fixed';
+            else status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
         }
-        return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, status, preview };
+        const replaces = src && Array.isArray(rt.operatorIds) && rt.operatorIds.length ? pickSourceOffers(src, rt).map((x) => String(x.offer.id)) : [];
+        return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, pricingLabel: pricingLabel(rt.pricing), status, preview, replaces_offer_ids: replaces };
     });
 
     // группировка по операторам: оператор → номера с его предложениями
@@ -138,7 +148,7 @@ const hotelRooms = wrap(async (req, res) => {
             if (!operators.has(key)) operators.set(key, { operator_id: key, operator_name: o.operator_name, rooms: new Map() });
             const op = operators.get(key);
             const roomId = Number(r.room && r.room.id);
-            if (!op.rooms.has(roomId)) op.rooms.set(roomId, { room_id: roomId, ID: r.ID, room: r.room, offers: [], room_types: ours.filter((x) => x.sourceRoomId === roomId && x.operatorIds.map(Number).includes(key)).map((x) => x.id) });
+            if (!op.rooms.has(roomId)) op.rooms.set(roomId, { room_id: roomId, ID: r.ID, room: r.room, offers: [], room_types: ours.filter((x) => x.sourceRoomId === roomId && (!x.operatorIds.length || x.operatorIds.map(Number).includes(key))).map((x) => x.id) });
             op.rooms.get(roomId).offers.push({ id: String(o.id), meal, price: o.price, nights_count: o.nights_count, extras: o.extras ? { cancellation_policy: o.extras.cancellation_policy || null, instant_confirm: o.extras.instant_confirm } : null, availability: o.availability || null });
         }
     }
@@ -147,7 +157,7 @@ const hotelRooms = wrap(async (req, res) => {
     res.json({
         request_id: requestId, hotel_id: hotelId, search_type: data && data.search_type, currency: data && data.currency_code,
         operators: grouped,
-        rooms: rooms.map((r) => ({ ID: r.ID, room: r.room, min_price: r.min_price, meal_types: r.meal_types, offers: summarizeOffers(r) })),
+        rooms: rooms.map((r) => ({ ID: r.ID, room: r.room, min_price: r.min_price, meal_types: r.meal_types, offers: summarizeOffers(r), room_types: ours.filter((x) => x.sourceRoomId === Number(r.room && r.room.id)).map((x) => x.id) })),
         room_types: ours,
         settings,
     });
@@ -182,15 +192,29 @@ async function validateRoomType(body, settings, existing) {
     const sourceRoomId = intParam(b.sourceRoomId !== undefined ? b.sourceRoomId : (existing && existing.sourceRoomId));
     if (!hotelId) return { error: 'hotel_id_invalid' };
     if (!sourceRoomId) return { error: 'source_room_id_invalid' };
+    // v2: operatorIds / mealTypes необязательны (пустые = не ограничивать)
     const operatorIds = [...new Set((Array.isArray(b.operatorIds) ? b.operatorIds : (existing ? existing.operatorIds : [])).map(Number).filter((x) => Number.isInteger(x) && x > 0))];
-    if (!operatorIds.length) return { error: 'operator_required' };
     const operatorNames = Array.isArray(b.operatorNames) ? b.operatorNames.map((x) => String(x).slice(0, 128)).slice(0, 20) : (existing ? existing.operatorNames : []);
-    const mealTypes = Array.isArray(b.mealTypes) && b.mealTypes.length ? b.mealTypes.map((x) => String(x).slice(0, 16)).slice(0, 20) : (b.mealTypes === null ? null : (existing ? existing.mealTypes : null));
+    const mealTypes = Array.isArray(b.mealTypes) && b.mealTypes.length ? b.mealTypes.map((x) => String(x).slice(0, 16)).slice(0, 20) : (b.mealTypes === null || (Array.isArray(b.mealTypes) && !b.mealTypes.length) ? null : (existing ? existing.mealTypes : null));
     const c = validateContent(b.content || (existing ? { ...existing.content, ...(b.content || {}) } : b));
     if (c.error) return c;
-    const rule = normalizeRule(Object.assign({}, existing ? { ruleType: existing.ruleType, ruleValue: existing.ruleValue, rounding: existing.rounding, minPrice: existing.minPrice, maxPrice: existing.maxPrice, minMarginType: existing.minMarginType, minMarginValue: existing.minMarginValue } : {}, b.rule || b), settings);
-    if (rule.error) return rule;
-    const packageTypes = Array.isArray(b.packageTypes) && b.packageTypes.length ? b.packageTypes.filter((x) => ['hotel', 'package'].includes(x)) : (existing ? existing.packageTypes : ['hotel']);
+    // v2: режим цены — fixed (по умолчанию для новых) | rule
+    const pricingMode = PRICING_MODES.includes(b.pricingMode) ? b.pricingMode : PRICING_MODES.includes(b.pricing_mode) ? b.pricing_mode
+        : (existing ? existing.pricingMode : (b.rule && (b.rule.ruleType || b.rule.rule_type) && b.fixedPrice === undefined ? 'rule' : 'fixed'));
+    const ruleInput = Object.assign({}, existing && existing.ruleType ? { ruleType: existing.ruleType, ruleValue: existing.ruleValue, rounding: existing.rounding, minPrice: existing.minPrice, maxPrice: existing.maxPrice, minMarginType: existing.minMarginType, minMarginValue: existing.minMarginValue } : {}, b.rule || (b.ruleType || b.rule_type ? b : {}));
+    const ruleN = normalizeRule(ruleInput, settings);
+    if (pricingMode === 'rule' && ruleN.error) return ruleN;
+    const rule = ruleN.error ? null : ruleN;
+    const fixedPrice = b.fixedPrice !== undefined ? b.fixedPrice : b.fixed_price !== undefined ? b.fixed_price : (existing ? existing.fixedPrice : null);
+    const fixedPriceUnit = FIXED_UNITS.includes(b.fixedPriceUnit) ? b.fixedPriceUnit : FIXED_UNITS.includes(b.fixed_price_unit) ? b.fixed_price_unit : (existing ? existing.fixedPriceUnit : 'total');
+    const pricing = normalizePricing({ mode: pricingMode, fixedPrice, fixedPriceUnit, rule });
+    if (pricing.error) return { error: pricing.error };
+    const operatorName = str(b.operatorName !== undefined ? b.operatorName : b.operator_name, 128) || (existing && existing.operatorName) || 'Arlekino';
+    const operatorIdRaw = b.operatorId !== undefined ? b.operatorId : b.operator_id !== undefined ? b.operator_id : (existing ? existing.operatorId : null);
+    const operatorId = operatorIdRaw === null || operatorIdRaw === '' || operatorIdRaw === undefined ? null : intParam(operatorIdRaw);
+    if (operatorIdRaw !== null && operatorIdRaw !== '' && operatorIdRaw !== undefined && !operatorId) return { error: 'operator_id_invalid' };
+    // packageTypes: пустые = любой тип поиска
+    const packageTypes = Array.isArray(b.packageTypes) ? b.packageTypes.filter((x) => ['hotel', 'package'].includes(x)) : (existing ? existing.packageTypes : []);
     return {
         value: {
             hotelId, hotelName: str(b.hotelName, 255) || (existing && existing.hotelName) || null,
@@ -199,7 +223,8 @@ async function validateRoomType(body, settings, existing) {
             sourceRoomId, sourceRoomName: str(b.sourceRoomName, 255) || (existing && existing.sourceRoomName) || null,
             sourceSnapshot: b.sourceSnapshot && typeof b.sourceSnapshot === 'object' ? b.sourceSnapshot : (existing ? existing.sourceSnapshot : null),
             operatorIds, operatorNames, mealTypes,
-            content: c.content, rule, packageTypes: packageTypes.length ? packageTypes : ['hotel'],
+            content: c.content, rule, pricing, pricingMode: pricing.mode, fixedPrice: pricing.fixedPrice, fixedPriceUnit: pricing.fixedPriceUnit, operatorName, operatorId,
+            packageTypes,
             badge: str(b.badge, 64) || (existing ? existing.badge : null) || settings.badge,
             active: b.active === undefined ? (existing ? existing.active : true) : b.active !== false,
             sortOrder: b.sortOrder === undefined ? (existing ? existing.sortOrder : 0) : (Number(b.sortOrder) || 0),
@@ -209,7 +234,7 @@ async function validateRoomType(body, settings, existing) {
 
 function diff(before, after) {
     const out = {};
-    const keys = ['operatorIds', 'mealTypes', 'ruleType', 'ruleValue', 'rounding', 'minPrice', 'maxPrice', 'minMarginType', 'minMarginValue', 'badge', 'active', 'sortOrder', 'packageTypes'];
+    const keys = ['operatorIds', 'mealTypes', 'pricingMode', 'fixedPrice', 'fixedPriceUnit', 'operatorName', 'operatorId', 'ruleType', 'ruleValue', 'rounding', 'minPrice', 'maxPrice', 'minMarginType', 'minMarginValue', 'badge', 'active', 'sortOrder', 'packageTypes'];
     for (const k of keys) if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) out[k] = { from: before[k], to: after[k] };
     for (const k of Object.keys(after.content || {})) if (JSON.stringify(before.content && before.content[k]) !== JSON.stringify(after.content[k])) out[`content.${k}`] = { from: before.content ? before.content[k] : null, to: after.content[k] };
     return out;
@@ -223,7 +248,7 @@ const list = wrap(async (req, res) => {
 const get = wrap(async (req, res) => {
     const rt = await store.getRoomType(intParam(req.params.id));
     if (!rt) return fail(res, 'not_found');
-    res.json({ room_type: { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null } });
+    res.json({ room_type: { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, pricingLabel: pricingLabel(rt.pricing) } });
 });
 
 /** POST /room-types — создать (в т.ч. «на основе номера»: body.source = { room, offers } из выдачи). */
@@ -242,7 +267,7 @@ const create = wrap(async (req, res) => {
     if (v.error) return fail(res, v.error);
     const staff = staffOf(req);
     const id = await store.createRoomType(v.value, staff.name);
-    await store.logChange(id, staff, { created: true, rule: `${v.value.rule.ruleType} ${v.value.rule.ruleValue}`, operators: v.value.operatorIds });
+    await store.logChange(id, staff, { created: true, pricing: pricingLabel(v.value.pricing), rule: v.value.rule ? `${v.value.rule.ruleType} ${v.value.rule.ruleValue}` : null, operators: v.value.operatorIds });
     const rt = await store.getRoomType(id);
     res.status(201).json({ ok: true, room_type: rt });
 });
@@ -291,9 +316,10 @@ const duplicate = wrap(async (req, res) => {
         hotelId: src.hotelId, hotelName: src.hotelName, hotelStars: src.hotelStars, hotelCity: src.hotelCity,
         sourceRoomId: src.sourceRoomId, sourceRoomName: src.sourceRoomName, sourceSnapshot: src.sourceSnapshot,
         operatorIds: src.operatorIds, operatorNames: src.operatorNames, mealTypes: src.mealTypes,
+        pricingMode: src.pricingMode, fixedPrice: src.fixedPrice, fixedPriceUnit: src.fixedPriceUnit, operatorName: src.operatorName, operatorId: src.operatorId,
         content: b.copyContent === false && src.sourceSnapshot ? { nameRu: `${src.sourceSnapshot.name_ru || src.content.nameRu} (копия)`, description: src.sourceSnapshot.description, area: src.sourceSnapshot.area, view: src.sourceSnapshot.view, facilities: src.sourceSnapshot.facilities, images: b.images === 'none' ? [] : (src.sourceSnapshot.images || []).map((im) => ({ source: 'lt', url: im.x900 || im.x900x380 || im })) }
             : { ...src.content, nameRu: str(b.name, 255) || `${src.content.nameRu} (копия)`, images: b.images === 'none' ? [] : src.content.images },
-        rule: b.copyRule === false ? { ruleType: 'percent', ruleValue: 0 } : { ruleType: src.ruleType, ruleValue: src.ruleValue, rounding: src.rounding, minPrice: src.minPrice, maxPrice: src.maxPrice, minMarginType: src.minMarginType, minMarginValue: src.minMarginValue },
+        rule: b.copyRule === false ? { ruleType: 'percent', ruleValue: 0 } : (src.ruleType ? { ruleType: src.ruleType, ruleValue: src.ruleValue, rounding: src.rounding, minPrice: src.minPrice, maxPrice: src.maxPrice, minMarginType: src.minMarginType, minMarginValue: src.minMarginValue } : undefined),
         packageTypes: src.packageTypes, badge: src.badge, active: false, sortOrder: src.sortOrder + 1,
     };
     if (str(b.name, 255)) body.content.nameRu = str(b.name, 255);
@@ -305,15 +331,25 @@ const duplicate = wrap(async (req, res) => {
     res.status(201).json({ ok: true, room_type: await store.getRoomType(newId) });
 });
 
-/** POST /room-types/preview-price { rule, offers: [{operator_name, meal, price}] } | { providerPrice } — расчёт без сохранения. */
+/**
+ * POST /room-types/preview-price — расчёт без сохранения.
+ * rule: { rule, offers: [{operator_name, meal, price, nights_count}] } | { providerPrice }
+ * v2 fixed: { pricingMode:'fixed', fixedPrice, fixedPriceUnit, offers? } → final = fixedPrice (per_night × nights_count).
+ */
 const previewPrice = wrap(async (req, res) => {
     const b = req.body || {};
     const settings = await store.getSettings();
-    const rule = normalizeRule(b.rule || b, settings);
-    if (rule.error) return fail(res, rule.error);
-    const offers = Array.isArray(b.offers) && b.offers.length ? b.offers : (b.providerPrice ? [{ price: b.providerPrice }] : []);
-    const rows = offers.map((o) => { const p = finalPrice(o.price, rule); return { operator_name: o.operator_name || null, meal: o.meal || null, provider_price: Number(o.price), final_price: p.final, margin: p.margin, margin_percent: p.marginPercent, margin_clamped: p.marginClamped, floor: p.floor }; });
-    res.json({ rule: { ...rule, label: ruleLabel(rule) }, rows });
+    const mode = PRICING_MODES.includes(b.pricingMode) ? b.pricingMode : PRICING_MODES.includes(b.pricing_mode) ? b.pricing_mode : 'rule';
+    let rule = null;
+    if (mode === 'rule') {
+        rule = normalizeRule(b.rule || b, settings);
+        if (rule.error) return fail(res, rule.error);
+    }
+    const pricing = normalizePricing({ mode, fixedPrice: b.fixedPrice !== undefined ? b.fixedPrice : b.fixed_price, fixedPriceUnit: b.fixedPriceUnit || b.fixed_price_unit, rule });
+    if (pricing.error) return fail(res, pricing.error);
+    const offers = Array.isArray(b.offers) && b.offers.length ? b.offers : (b.providerPrice ? [{ price: b.providerPrice, nights_count: b.nights }] : (mode === 'fixed' ? [{ price: null, nights_count: b.nights }] : []));
+    const rows = offers.map((o) => { const p = computePrice(o.price, nightsOf(o), pricing); return { operator_name: o.operator_name || null, meal: o.meal || null, nights_count: nightsOf(o), provider_price: o.price === null || o.price === undefined ? null : Number(o.price), final_price: p.final, margin: p.margin, margin_percent: p.marginPercent, margin_clamped: p.marginClamped, floor: p.floor, mode: pricing.mode }; });
+    res.json({ pricingMode: pricing.mode, fixedPrice: pricing.fixedPrice, fixedPriceUnit: pricing.fixedPriceUnit, label: pricingLabel(pricing), rule: rule ? { ...rule, label: ruleLabel(rule) } : null, rows });
 });
 
 const priceLog = wrap(async (req, res) => {
@@ -432,5 +468,5 @@ module.exports = {
     readyGuard, searchHotels, hotelRooms, list, get, create, update, toggle, remove, duplicate, previewPrice, priceLog, changeLog, orders,
     uploadImage, deleteImage, getSettings, putSettings,
     bookingsList, bookingsSummary, bookingGet, bookingConfirm, bookingVoucher, bookingResendVoucher, bookingReject, bookingCancel, bookingRefundDone, bookingComment,
-    _internal: { validateContent, validateRoomType, diff },
+    _internal: { validateContent, validateRoomType, diff, previewRows },
 };
