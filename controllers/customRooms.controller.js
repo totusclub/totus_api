@@ -427,7 +427,7 @@ const diagnostics = wrap(async (req, res) => {
     if (mw.hotelsRoomsErrors) hints.push(`Ошибок трансформации ответа: ${mw.hotelsRoomsErrors} (клиент получил оригинал LT) — последняя: ${mw.lastError && mw.lastError.message}.`);
     res.json({
         ready: ready.ready, disabledReason: ready.disabledReason, missingTables: ready.missingTables, missingColumns: ready.missingColumns, diagColumns: ready.diagColumns, checkedAt: ready.checkedAt, dbError: ready.error,
-        settings, env: { hotelSearchTypeCodes: String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '2') },
+        settings, env: { hotelSearchTypeCodes: String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '1') },
         activeRoomTypes,
         appJsHooks: { middleware: { mounted: mw.middlewareCalls > 0, ...mw }, adminRoutes: true },
         events, hints,
