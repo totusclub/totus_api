@@ -182,7 +182,7 @@ const fixedRt = (extra) => ({ id: 9, hotelId: 123, sourceRoomId: 501, operatorId
     // замещение только при заданных operator_ids
     const src = mkLtRoom();
     assert.strictEqual(inject.removeReplacedOffers(src, fixedRt()), 0); assert.strictEqual(src.offers.AI.length, 2, 'без operator_ids источник не трогаем');
-    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt({ operatorIds: [12] })), 2, 'operator_ids [12] → удалены AI/UAI Arlekino');
+    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt({ operatorIds: [12] })), 2, 'функция замещения работает, но на витрине не вызывается');
     assert.strictEqual(src.offers.AI.length, 1); assert.strictEqual(src.offers.AI[0].operator_id, 33); assert.strictEqual(src.offers.UAI, undefined);
 }
 
@@ -226,12 +226,12 @@ async function injectChecks() {
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req3', hotelId: 123, searchType: 'hotel' });
     assert.strictEqual(out.result[1].offers.AI.length, 1); assert.strictEqual(out.result[1].offers.UAI.length, 1); assert.strictEqual(out.result[1].meal_types.length, 2);
 
-    // 4) замещение при operator_ids: Arlekino (12) из источника удалён, Coral остался; наша — рядом
+    // 4) operator_ids заданы: предложения источника НЕ удаляются (с 15.09 показываются оба), шаблон — из указанных операторов
     storeStub.rts = [fixedRt({ operatorIds: [12], operatorNames: ['Arlekino'] })];
     out = await inject.injectRooms(ltData([mkLtRoom()]), { requestId: 'req4', hotelId: 123, searchType: 'hotel' });
     assert.strictEqual(out.result.length, 2);
-    assert.strictEqual(out.result[0].offers.AI.length, 1); assert.strictEqual(out.result[0].offers.AI[0].operator_id, 33); assert.strictEqual(out.result[0].offers.UAI, undefined);
-    assert.strictEqual(out.result[0].meal_types.length, 1, 'UAI у источника пропало'); assert.strictEqual(out.result[0].min_price, 98900);
+    assert.strictEqual(out.result[0].offers.AI.length, 2, 'источник не тронут'); assert.strictEqual(out.result[0].offers.UAI.length, 1);
+    assert.strictEqual(out.result[0].meal_types.length, 2, 'питание источника сохранено'); assert.strictEqual(out.result[0].min_price, 96500);
     assert.strictEqual(out.result[1].offers.AI[0].price, 1); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.sourceOfferId, '9001', 'шаблон — самое дешёвое (Arlekino 96 500)');
 
     // 5) rule-режим не сломан: −10 % от самого дешёвого (Anex 97 500 → 87 750)
