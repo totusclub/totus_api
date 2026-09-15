@@ -5,7 +5,7 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js",
+    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js",
     "migrate:custom-rooms": "node scripts/run-custom-rooms-migration.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
