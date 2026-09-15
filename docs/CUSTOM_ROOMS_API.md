@@ -18,7 +18,7 @@ app.use('/api/admin/rooms', require('./routes/customRooms.routes'));
 
 **Если Room Type не виден на сайте** — открыть в админке «Отели и номера → Настройки → Диагностика» или `GET /api/admin/rooms/diagnostics` со staff-токеном (раздел 7): там видно, выполнена ли миграция, подключён ли middleware в `app.js`, доходят ли `GET /hotels-rooms` до него и по какой причине каждая активная Room Type пропущена в последнем ответе.
 
-Переменные: `CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES` (необязательно; коды `search_type` в ответе LT `hotel_rooms`, считающиеся поиском «отель», по умолчанию `2`; основной источник — параметр `search_type` при `/start-search`); `BOOKINGS_NOTIFY_EMAIL` (необязательно; адреса сотрудников через запятую — письмо «Новое бронирование Arlekino №…» после оплаты); `API_PUBLIC_URL` (уже используется письмами; из него строится ссылка на ваучер).
+Переменные: `CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES` (необязательно; коды `search_type` в ответе LT `hotel_rooms`, считающиеся поиском «отель», по умолчанию `1` — LT отдаёт `0` для package и `1` для hotel; основной источник — параметр `search_type` при `/start-search`); `BOOKINGS_NOTIFY_EMAIL` (необязательно; адреса сотрудников через запятую — письмо «Новое бронирование Arlekino №…» после оплаты); `API_PUBLIC_URL` (уже используется письмами; из него строится ссылка на ваучер).
 
 ## 2. Как работает витрина (frontend без изменений)
 
@@ -144,7 +144,7 @@ v2: при фиксированной цене `"providerPrice": 97500` (цен�
 {
   "ready": true, "disabledReason": null, "missingTables": [], "missingColumns": [], "diagColumns": true, "checkedAt": "…", "dbError": null,
   "settings": { "hotelOnly": false, "badge": "Totus", "rounding": 1, "minMarginType": null, "minMarginValue": null },
-  "env": { "hotelSearchTypeCodes": "2" },
+  "env": { "hotelSearchTypeCodes": "1" },
   "activeRoomTypes": [{ "id": 9, "hotelId": 123, "hotelName": "Rixos", "sourceRoomId": 501, "sourceRoomName": "Deluxe", "pricingMode": "fixed", "pricingOk": true, "pricingLabel": "1 ₽ (фикс.)", "packageTypes": [], "lastSeenAt": null, "lastCheckedAt": "…", "lastSkipReason": "source_room_missing (source 501; ids in result: 611,612)" }],
   "appJsHooks": {
     "middleware": { "mounted": true, "middlewareCalls": 1532, "watchedCalls": 40, "notReadySkips": 0, "startSearchSeen": 12, "hotelsRoomsSeen": 25, "hotelsRoomsInjected": 0, "hotelsRoomsErrors": 0,
@@ -163,3 +163,11 @@ v2: при фиксированной цене `"providerPrice": 97500` (цен�
 - `lastCheckedAt` пуст у Room Type, хотя `hotelsRoomsSeen` растёт — запросы идут по другому `hotel_id`, чем `hotelId` Room Type.
 
 Проверка без БД: `node scripts/check-custom-rooms-diag.js` (причины пропуска, запасная связь по названию, счётчики middleware, ответ диагностики; входит в `npm run check`).
+
+### 7.1 Живая проверка на проде (15.09.2026) и проверка на реальном ответе LT
+
+Через публичные прокси `api.totus.club` (Москва → Египет, 29.09.2026, 7 ночей, 2 взрослых, `filter_hotel_name=rixos`, 8 отелей) наша комната **есть** в `GET /hotels-rooms` отеля 9022465 (Rixos Premium Seagate) при всех трёх сценариях: `search_type=package`, `search_type=hotel` и поиск сайта с `hotel_ids=9022465`. Вставлена сразу после источника: `ID: "totus-5"`, `room.id 10000005`, оператор `Arlekino` (`operator_id 990005`), `lt_extras.totus.custom: true`; предложение Level.Travel (78) источника заменено (Room Type #5 с `operator_ids [78]`, правило −10 %). У остальных семи отелей Rixos активных Room Type нет.
+
+Особенности реального ответа LT, закреплённые в `scripts/fixtures/hotel_rooms_sample.json` и `scripts/check-custom-rooms-live.js` (входит в `npm run check`): `lt_extras: null` и `labels: null` у предложений, `search_type: 0` (package) / `1` (hotel) в теле ответа, `ID` и `hotel_id` — строки, у части номеров `room.id = 0` с hash-`ID` (из таких Room Type создать нельзя — `source_room_id_invalid`), `request_id` длиннее 64 символов (режется в `saveOfferMap`).
+
+Если владелец не видит комнату на сайте, а `/hotels-rooms` её отдаёт — причина не в API: сверить `hotel_id`/даты в запросе сайта (DevTools → Network → `hotels-rooms`), обновить страницу без кэша; в админке (Настройки → Диагностика) у нужного Room Type смотреть `lastSkipReason`/`lastCheckedAt`.
