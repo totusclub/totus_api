@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const { ltRequest, logLtError, sendLtAxiosError } = require('../utils/levelTravelHttp');
 const store = require('../lib/customRooms/store');
+const diag = require('../lib/customRooms/diag');
 const { normalizeRule, ruleLabel, normalizePricing, computePrice, pricingLabel, PRICING_MODES, FIXED_UNITS } = require('../lib/customRooms/pricing');
 const { pickSourceOffers, pickTemplateOffers, operatorIdOf, operatorNameOf } = require('../lib/customRooms/inject');
 const bookings = require('../lib/customRooms/bookings');
@@ -131,7 +132,8 @@ const hotelRooms = wrap(async (req, res) => {
     const ours = rts.map((rt) => {
         const src = byRoom.get(Number(rt.sourceRoomId));
         const preview = previewRows(src, rt);
-        let status = rt.active ? 'source_missing' : 'inactive';
+        // диагностика: no_pricing (нет цены/правила) и no_offers (номер есть, предложений нет) вместо ложного source_missing
+        let status = rt.active ? (src ? (rt.pricing ? 'no_offers' : 'no_pricing') : 'source_missing') : 'inactive';
         if (src && preview.length && rt.active) {
             if (rt.pricing && rt.pricing.mode === 'fixed') status = 'fixed';
             else status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
@@ -381,6 +383,57 @@ const deleteImage = wrap(async (req, res) => {
     res.json({ ok: true });
 });
 
+/**
+ * GET /diagnostics?recheck=1 — почему Room Type не виден на витрине (без логов сервера). Работает и при DISABLED
+ * (маршрут смонтирован до readyGuard). Ответ:
+ * { ready, disabledReason, missingTables, missingColumns, diagColumns, checkedAt, settings, env,
+ *   activeRoomTypes: [{ id, hotelId, hotelName, sourceRoomId, sourceRoomName, pricingMode, pricingOk, packageTypes, lastSeenAt, lastCheckedAt, lastSkipReason }],
+ *   appJsHooks: { middleware: { mounted, middlewareCalls, watchedCalls, notReadySkips, startSearchSeen, hotelsRoomsSeen, hotelsRoomsInjected, hotelsRoomsErrors, lastStartSearchAt, lastHotelsRoomsAt, lastHotelsRoomsHotelId, lastHotelsRoomsSearchType, lastInjectAt, lastError, startedAt }, adminRoutes: true },
+ *   events: [{ at, line }], hints: ['…'] }
+ */
+const diagnostics = wrap(async (req, res) => {
+    const q = req.query || {};
+    const ready = await store.getReadyState(q.recheck === '1' || q.recheck === 'true');
+    const s = diag.snapshot();
+    const { events, ...mw } = s;
+    const hints = [];
+    let settings = null;
+    let activeRoomTypes = [];
+    if (!ready.ready) {
+        hints.push(`Модуль выключен целиком (${ready.disabledReason}): на сервере выполнить node scripts/run-custom-rooms-migration.js и pm2 restart api, затем открыть эту страницу с ?recheck=1.`);
+    } else {
+        settings = await store.getSettings(true);
+        try {
+            activeRoomTypes = (await store.listActiveRoomTypes()).map((rt) => ({
+                id: rt.id, hotelId: rt.hotelId, hotelName: rt.hotelName, sourceRoomId: rt.sourceRoomId, sourceRoomName: rt.sourceRoomName,
+                pricingMode: rt.pricingMode, pricingOk: Boolean(rt.pricing), pricingLabel: pricingLabel(rt.pricing), packageTypes: rt.packageTypes,
+                lastSeenAt: rt.last.seenAt, lastCheckedAt: rt.lastCheckedAt, lastSkipReason: rt.lastSkipReason,
+            }));
+        } catch (e) { hints.push(`Не удалось прочитать custom_room_types: ${e.message}`); }
+        if (!ready.diagColumns) hints.push('Колонок last_skip_reason/last_checked_at нет: причина пропуска не сохраняется — повторно выполнить node scripts/run-custom-rooms-migration.js && pm2 restart api.');
+        if (settings.hotelOnly) hints.push('Настройка «Показывать только при поиске отелей» включена, а сайт по умолчанию ищет с search_type=package — выключить в настройках или ограничить на самих Room Type.');
+        if (!activeRoomTypes.length) hints.push('Нет активных Room Type — включить Room Type в админке.');
+        for (const rt of activeRoomTypes) {
+            const tag = `Room Type #${rt.id} (${rt.hotelName || `отель ${rt.hotelId}`})`;
+            if (!rt.pricingOk) hints.push(`${tag}: режим цены ${rt.pricingMode} без цены/правила — открыть «Изменить» и сохранить цену.`);
+            if (rt.packageTypes && rt.packageTypes.length && !rt.packageTypes.includes('package')) hints.push(`${tag}: показывается только при поиске ${rt.packageTypes.join(',')}, а сайт по умолчанию ищет package — переключить «Показывать при типе поиска» на «Любой».`);
+            if (!rt.lastCheckedAt && !rt.lastSeenAt) hints.push(`${tag}: ещё ни один запрос /hotels-rooms по отелю ${rt.hotelId} не прошёл через middleware после запуска (${s.startedAt}) — открыть страницу отеля на сайте и обновить диагностику; если hotelsRoomsSeen растёт, а lastCheckedAt пуст — hotel_id в запросе сайта отличается от hotelId Room Type.`);
+            else if (rt.lastSkipReason) hints.push(`${tag}: последний раз пропущен — ${rt.lastSkipReason}.`);
+        }
+    }
+    if (mw.middlewareCalls === 0) hints.push('Через middleware не прошло ни одного запроса — проверить app.js: app.use(require(\'./middleware/customRooms\')) до прокси-маршрутов и pm2 restart api.');
+    else if (mw.hotelsRoomsSeen === 0) hints.push(`Middleware подключён (${mw.middlewareCalls} запросов), но GET /hotels-rooms с request_id и hotel_id ещё не было с ${s.startedAt} — открыть страницу отеля на сайте.`);
+    else if (mw.hotelsRoomsInjected === 0) hints.push(`GET /hotels-rooms обработано ${mw.hotelsRoomsSeen} раз (последний: отель ${mw.lastHotelsRoomsHotelId}, search_type ${mw.lastHotelsRoomsSearchType || '—'}), вставок не было — смотреть lastSkipReason у Room Type и events ниже.`);
+    if (mw.hotelsRoomsErrors) hints.push(`Ошибок трансформации ответа: ${mw.hotelsRoomsErrors} (клиент получил оригинал LT) — последняя: ${mw.lastError && mw.lastError.message}.`);
+    res.json({
+        ready: ready.ready, disabledReason: ready.disabledReason, missingTables: ready.missingTables, missingColumns: ready.missingColumns, diagColumns: ready.diagColumns, checkedAt: ready.checkedAt, dbError: ready.error,
+        settings, env: { hotelSearchTypeCodes: String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '2') },
+        activeRoomTypes,
+        appJsHooks: { middleware: { mounted: mw.middlewareCalls > 0, ...mw }, adminRoutes: true },
+        events, hints,
+    });
+});
+
 const getSettings = wrap(async (req, res) => { res.json({ settings: await store.getSettings(true) }); });
 const putSettings = wrap(async (req, res) => {
     const r = await store.updateSettings(req.body || {});
@@ -466,7 +519,7 @@ const bookingComment = wrap(async (req, res) => {
 
 module.exports = {
     readyGuard, searchHotels, hotelRooms, list, get, create, update, toggle, remove, duplicate, previewPrice, priceLog, changeLog, orders,
-    uploadImage, deleteImage, getSettings, putSettings,
+    uploadImage, deleteImage, getSettings, putSettings, diagnostics,
     bookingsList, bookingsSummary, bookingGet, bookingConfirm, bookingVoucher, bookingResendVoucher, bookingReject, bookingCancel, bookingRefundDone, bookingComment,
     _internal: { validateContent, validateRoomType, diff, previewRows },
 };
