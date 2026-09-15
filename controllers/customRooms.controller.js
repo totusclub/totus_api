@@ -138,7 +138,7 @@ const hotelRooms = wrap(async (req, res) => {
             if (rt.pricing && rt.pricing.mode === 'fixed') status = 'fixed';
             else status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
         }
-        const replaces = src && Array.isArray(rt.operatorIds) && rt.operatorIds.length ? pickSourceOffers(src, rt).map((x) => String(x.offer.id)) : [];
+        const replaces = []; // с 15.09 предложения LT не замещаются — показываются оба
         return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, pricingLabel: pricingLabel(rt.pricing), status, preview, replaces_offer_ids: replaces };
     });
 
