@@ -2,7 +2,8 @@
 // Таблицы custom_room_* + 4 колонки в orders + бронирования без Level.Travel
 // (custom_room_bookings, custom_room_booking_events, 3 колонки в custom_room_package_map)
 // + v2 «связь по номеру и фиксированная цена» (5 колонок в custom_room_types, rule_type/rule_value → NULL допустим,
-//   operator_ids → NULL допустим; pricing_mode старых строк: rule, если правило есть, иначе fixed) — идемпотентно.
+//   operator_ids → NULL допустим; pricing_mode старых строк: rule, если правило есть, иначе fixed)
+// + диагностика витрины (last_skip_reason, last_checked_at в custom_room_types) — идемпотентно.
 // После неё: pm2 restart api. План: claude/CUSTOM_ROOMS_PLAN_RU.md §4, бриф бронирований §1, бриф v2 §1.
 'use strict';
 
@@ -50,6 +51,8 @@ const DDL = [
     last_operator VARCHAR(128) NULL,
     last_margin_clamped TINYINT(1) NOT NULL DEFAULT 0,
     last_seen_at DATETIME NULL,
+    last_skip_reason VARCHAR(255) NULL,
+    last_checked_at DATETIME NULL,
     created_by VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -222,6 +225,9 @@ const ROOM_TYPE_COLUMNS = [
   ['fixed_price_unit', "ENUM('total','per_night') NOT NULL DEFAULT 'total'"],
   ['operator_name', "VARCHAR(128) NOT NULL DEFAULT 'Arlekino'"],
   ['operator_id', 'INT NULL'],
+  // диагностика витрины: причина, по которой комната не вставлена в последний ответ /hotels-rooms, и время проверки
+  ['last_skip_reason', 'VARCHAR(255) NULL'],
+  ['last_checked_at', 'DATETIME NULL'],
 ];
 
 async function addColumns(table, columns) {

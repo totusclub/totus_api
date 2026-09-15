@@ -1,7 +1,8 @@
 // Проверка наших Room Type без БД и сети: node scripts/check-custom-rooms.js
 // Правило цены, подмена номеров в выдаче LT, переписывание цен в пакете/заказе, маршруты middleware,
 // бронирования без Level.Travel (totus_booking, статусные переходы на фейковой БД, синтез prebook),
-// v2: связь по номеру LT без предложения оператора + фиксированная цена Arlekino (inject/packageFlow/controller/store).
+// v2: связь по номеру LT без предложения оператора + фиксированная цена Arlekino (inject/packageFlow/controller/store),
+// диагностика витрины — отдельно: node scripts/check-custom-rooms-diag.js (причины пропуска, /diagnostics, счётчики).
 'use strict';
 const assert = require('assert');
 process.env.DB_HOST = process.env.DB_HOST || 'localhost';
@@ -129,7 +130,8 @@ assert.strictEqual(v.price, 86850); assert.strictEqual(v.operator_name, 'Arlekin
 assert.strictEqual(v.lt_extras.totus.sourceOfferId, '9001');
 assert.strictEqual(inject.isVirtualOfferId('9001'), false);
 const vroom = inject.buildVirtualRoom(ltRoom, rt, 'Totus');
-assert.strictEqual(vroom.ID, 'totus-7'); assert.strictEqual(vroom.room.name_ru, 'Deluxe Sea View'); assert.strictEqual(vroom.room.images[0].x900, '/uploads/rooms/a.jpg');
+assert.strictEqual(vroom.ID, 'totus-7'); assert.strictEqual(vroom.room.name_ru, 'Deluxe Sea View'); assert.strictEqual(vroom.room.images[0].x900, 'https://api.totus.club/uploads/rooms/a.jpg', 'свои фото — абсолютный URL на totus_API (сайт и приложение не знают хост API для относительных путей)');
+assert.strictEqual(inject.buildVirtualRoom(ltRoom, { ...rt, content: { nameRu: 'X', images: [{ source: 'lt', url: 'https://img.cdn.level.travel/r.jpg' }] } }, 'Totus').room.images[0].x900, 'https://img.cdn.level.travel/r.jpg', 'фото LT не трогаем');
 assert.strictEqual(vroom.room.facilities[0].name, 'Балкон'); assert.strictEqual(vroom.room.id, 10000007);
 vroom.offers = { AI: [v] }; vroom.meal_types = [{ id: 'AI', min_price: 0 }];
 inject.recomputeRoomMins(vroom);
@@ -186,12 +188,13 @@ const fixedRt = (extra) => ({ id: 9, hotelId: 123, sourceRoomId: 501, operatorId
 
 // injectRooms целиком — на подменённом store (без БД)
 const storeStub = { rts: [], settings: { ...store.DEFAULT_SETTINGS }, offerMap: [], priceLogs: [], seen: [] };
-const origStore = { getSettings: store.getSettings, activeRoomTypesForHotel: store.activeRoomTypesForHotel, saveOfferMap: store.saveOfferMap, logPrice: store.logPrice, touchLastSeen: store.touchLastSeen };
+const origStore = { getSettings: store.getSettings, activeRoomTypesForHotel: store.activeRoomTypesForHotel, saveOfferMap: store.saveOfferMap, logPrice: store.logPrice, touchLastSeen: store.touchLastSeen, markChecked: store.markChecked };
 store.getSettings = async () => storeStub.settings;
 store.activeRoomTypesForHotel = async () => storeStub.rts;
 store.saveOfferMap = async (entries) => { storeStub.offerMap.push(...entries); };
 store.logPrice = async (e) => { storeStub.priceLogs.push(e); };
 store.touchLastSeen = async (id, info) => { storeStub.seen.push({ id, ...info }); };
+store.markChecked = async () => true; // причины пропуска — scripts/check-custom-rooms-diag.js
 const ltData = (rooms) => ({ search_type: 2, min_price: 96500, currency_code: 'RUB', result: rooms, filters: { meals: [{ id: 'AI', min_price: 96500 }, { id: 'UAI', min_price: 112300 }] } });
 async function injectChecks() {
     // 1) номер в выдаче, предложений нашего оператора нет → наша комната есть с fixed ценой 1 ₽; источник и его операторы остаются
@@ -236,7 +239,7 @@ async function injectChecks() {
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req5', hotelId: 123, searchType: 'hotel' });
     assert.strictEqual(out.result[1].offers.AI[0].price, 87750); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.mode, 'rule'); assert.strictEqual(out.result[1].offers.AI[0].operator_name, 'Arlekino');
 
-    // 6) номера нет в выдаче / нет offers / hotelOnly / packageTypes
+    // 6) номера нет в выдаче / нет offers / hotelOnly / packageTypes (причины пропуска — check-custom-rooms-diag.js)
     storeStub.rts = [fixedRt({ sourceRoomId: 999 })];
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req6', hotelId: 123, searchType: 'hotel' });
     assert.strictEqual(out.result.length, 1, 'нет источника — нет комнаты');

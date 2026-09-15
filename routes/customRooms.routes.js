@@ -20,6 +20,8 @@ function voucherUpload(req, res, next) {
 }
 
 router.use(requireStaff);
+// Диагностика — ДО readyGuard: должна отвечать и когда модуль DISABLED (миграция не выполнена)
+router.get('/diagnostics', c.diagnostics);
 router.use(c.readyGuard);
 
 router.get('/hotels/search', c.searchHotels);
