@@ -20,7 +20,9 @@ const { injectRooms } = require('../lib/customRooms/inject');
 const flow = require('../lib/customRooms/packageFlow');
 const internal = require('../lib/customRooms/internalOrders');
 
-const SEARCH_TYPE_HOTEL_CODES = String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '2').split(',').map((s) => s.trim());
+// Коды search_type в теле ответа LT /search/hotel_rooms (снято с прода 15.09.2026): 0 — package (с перелётом), 1 — hotel (без перелёта).
+// Используются только если request_id не сохранён через /start-search (поиск начат ассистентом, запись устарела).
+const SEARCH_TYPE_HOTEL_CODES = String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '1').split(',').map((s) => s.trim());
 
 function wrapJson(res, transform) {
     const orig = res.json.bind(res);
