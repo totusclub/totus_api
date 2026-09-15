@@ -44,7 +44,9 @@ function notifyHubDocumentsReady(orderId, savedDocuments) {
     .catch((err) => console.error('[notify-hub] documents sync hook failed:', err.message));
 }
 
-function resolveAuthToken(orderRow, overrideToken) {
+// opts.allowEnv=false — только токен самого заказа (query/строка БД/package), без общего LT_CLIENT_AUTH_TOKEN:
+// используется, когда токен отдаётся клиенту (lt_auth_token в GET /orders) — чужой env-токен наружу не уходит.
+function resolveAuthToken(orderRow, overrideToken, opts = {}) {
   const explicit = String(overrideToken || '').trim();
   if (explicit) return explicit;
 
@@ -66,10 +68,20 @@ function resolveAuthToken(orderRow, overrideToken) {
     }
   }
 
+  // Внутренние заказы (бронирования Arlekino, order_id >= 900000000) в Level.Travel не существуют —
+  // общий env-токен к ним не применяем (иначе LT вернёт чужой заказ / order not found).
+  if (isInternalOrderId(orderRow?.order_id)) return null;
+  if (opts && opts.allowEnv === false) return null;
+
   const envToken = String(process.env.LT_CLIENT_AUTH_TOKEN || '').trim();
   if (envToken) return envToken;
 
   return null;
+}
+
+function isInternalOrderId(orderId) {
+  const n = Number(String(orderId ?? '').replace(/^ORDER/i, '').trim());
+  return Number.isFinite(n) && n >= 900000000;
 }
 
 function parseLtOrderResponse(data) {
@@ -438,6 +450,7 @@ module.exports = {
   saveOrderPackageToDb,
   loadExistingPackage,
   resolveAuthToken,
+  isInternalOrderId,
   shouldDownloadDocuments,
   getNewStateFromChanges,
   parseLtOrderResponse,
