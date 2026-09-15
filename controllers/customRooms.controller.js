@@ -12,7 +12,7 @@ const { ltRequest, logLtError, sendLtAxiosError } = require('../utils/levelTrave
 const store = require('../lib/customRooms/store');
 const diag = require('../lib/customRooms/diag');
 const { normalizeRule, ruleLabel, normalizePricing, computePrice, pricingLabel, PRICING_MODES, FIXED_UNITS } = require('../lib/customRooms/pricing');
-const { pickSourceOffers, pickTemplateOffers, operatorIdOf, operatorNameOf } = require('../lib/customRooms/inject');
+const { pickTemplateOffers, operatorIdOf, operatorNameOf } = require('../lib/customRooms/inject');
 const bookings = require('../lib/customRooms/bookings');
 
 const ERROR_STATUS = { not_found: 404, custom_rooms_not_migrated: 503, source_room_not_found: 404, request_id_required: 400 };
@@ -128,7 +128,8 @@ const hotelRooms = wrap(async (req, res) => {
     const settings = await store.getSettings();
     const byRoom = new Map(rooms.map((r) => [Number(r.room && r.room.id), r]));
 
-    // v2: наши Room Type показываем под исходным номером всегда, когда номер есть в выдаче (оператор LT не важен)
+    // v3: наши Room Type показываем под исходным номером всегда, когда номер есть в выдаче (связь только по room.id);
+    // наши предложения на витрине — внутри этого номера (группа «Arlekino»), предложения LT не замещаются
     const ours = rts.map((rt) => {
         const src = byRoom.get(Number(rt.sourceRoomId));
         const preview = previewRows(src, rt);
@@ -136,10 +137,9 @@ const hotelRooms = wrap(async (req, res) => {
         let status = rt.active ? (src ? (rt.pricing ? 'no_offers' : 'no_pricing') : 'source_missing') : 'inactive';
         if (src && preview.length && rt.active) {
             if (rt.pricing && rt.pricing.mode === 'fixed') status = 'fixed';
-            else status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'replacing';
+            else status = preview.some((x) => x.margin_clamped) ? 'margin_clamped' : 'active';
         }
-        const replaces = []; // с 15.09 предложения LT не замещаются — показываются оба
-        return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, pricingLabel: pricingLabel(rt.pricing), status, preview, replaces_offer_ids: replaces };
+        return { ...rt, ruleLabel: rt.rule ? ruleLabel(rt.rule) : null, pricingLabel: pricingLabel(rt.pricing), status, preview };
     });
 
     // группировка по операторам: оператор → номера с его предложениями
