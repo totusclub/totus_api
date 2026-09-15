@@ -15,6 +15,7 @@
  */
 
 const store = require('../lib/customRooms/store');
+const diag = require('../lib/customRooms/diag');
 const { injectRooms } = require('../lib/customRooms/inject');
 const flow = require('../lib/customRooms/packageFlow');
 const internal = require('../lib/customRooms/internalOrders');
@@ -51,9 +52,11 @@ async function handle(req, res, next) {
     // /start-search: запоминаем тип поиска по request_id (нужен для /hotels-rooms)
     if (method === 'GET' && path === '/start-search') {
         const st = searchTypeOf(q);
+        diag.bump('startSearchSeen', { lastStartSearchAt: new Date().toISOString() });
         wrapJson(res, async (body) => {
             const rid = body && (body.request_id || (body.search && body.search.request_id) || body.id);
             if (rid) await store.rememberSearch(rid, st || 'package', { from_city: q.from_city, to_country: q.to_country, start_date: q.start_date, nights: q.nights, adults: q.adults, kids: q.kids });
+            else diag.log(`start-search: no request_id in LT response (keys: ${Object.keys(body || {}).join(',')})`);
             return body;
         });
         return next();
@@ -69,7 +72,14 @@ async function handle(req, res, next) {
             if (!searchType && body && body.search_type !== undefined) {
                 searchType = SEARCH_TYPE_HOTEL_CODES.includes(String(body.search_type)) ? 'hotel' : 'package';
             }
-            return injectRooms(body, { requestId, hotelId, searchType });
+            diag.bump('hotelsRoomsSeen', { lastHotelsRoomsAt: new Date().toISOString(), lastHotelsRoomsHotelId: String(hotelId), lastHotelsRoomsSearchType: searchType || null });
+            try {
+                return await injectRooms(body, { requestId, hotelId, searchType });
+            } catch (e) {
+                diag.bump('hotelsRoomsErrors');
+                diag.error(`hotel ${hotelId}: inject failed`, e);
+                throw e;
+            }
         });
         return next();
     }
@@ -143,11 +153,14 @@ async function handle(req, res, next) {
 const WATCHED = /^\/(start-search|hotels-rooms|packages\/(package_details|actualize|prebook|flights)|orders\/prebuild|create-package|check_pay|level_travel\/notify-paid|payment\/status|vtb\/create-order|orders(\/[^/]+\/payment)?|user\/orders|client\/orders(\/[^/]+(\/sync)?)?)$/;
 
 function customRoomsMiddleware(req, res, next) {
+    // счётчик любого запроса — признак, что app.use(require('./middleware/customRooms')) подключён в app.js
+    diag.stats.middlewareCalls += 1;
     if (!WATCHED.test(req.path || '')) return next();
+    diag.stats.watchedCalls += 1;
     store.isReady().then((ok) => {
-        if (!ok) return next();
+        if (!ok) { diag.stats.notReadySkips += 1; return next(); }
         return handle(req, res, next);
-    }).catch((e) => { console.error('[custom-rooms] middleware failed:', e && e.message); next(); });
+    }).catch((e) => { diag.error('middleware failed', e); next(); });
 }
 
 // Проверка таблиц после старта + чистка карт раз в час
