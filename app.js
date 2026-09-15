@@ -40,6 +40,8 @@ app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')));
 app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));
+app.use(require('./middleware/customRooms'));
+app.use('/api/admin/rooms', require('./routes/customRooms.routes'));
 
 const BASE_URL = 'https://api.level.travel';
 const {
