@@ -1,6 +1,7 @@
 // Проверка наших Room Type без БД и сети: node scripts/check-custom-rooms.js
 // Правило цены, подмена номеров в выдаче LT, переписывание цен в пакете/заказе, маршруты middleware,
-// бронирования без Level.Travel (totus_booking, статусные переходы на фейковой БД, синтез prebook).
+// бронирования без Level.Travel (totus_booking, статусные переходы на фейковой БД, синтез prebook),
+// v2: связь по номеру LT без предложения оператора + фиксированная цена Arlekino (inject/packageFlow/controller/store).
 'use strict';
 const assert = require('assert');
 process.env.DB_HOST = process.env.DB_HOST || 'localhost';
@@ -48,9 +49,22 @@ function fakeQuery(sql, args = []) {
 }
 const dbMod = require('../db');
 dbMod.query = fakeQuery;
+// Level.Travel в проверках не вызывается: если utils/levelTravelHttp недоступен (частичная копия репозитория) — заглушка
+{
+    const Module = require('module');
+    const origLoad = Module._load;
+    Module._load = function (request, ...rest) {
+        if (/utils\/levelTravelHttp$/.test(String(request))) {
+            try { return origLoad.call(this, request, ...rest); } catch (e) { return { ltRequest: async () => { throw new Error('LT disabled in checks'); }, logLtError() {}, sendLtAxiosError: (res) => res.status(502).json({ error: 'lt_disabled' }) }; }
+        }
+        return origLoad.call(this, request, ...rest);
+    };
+}
 
-const { normalizeRule, finalPrice, ruleLabel } = require('../lib/customRooms/pricing');
+const { normalizeRule, finalPrice, ruleLabel, normalizePricing, computePrice, pricingSnapshot, pricingLabel } = require('../lib/customRooms/pricing');
 const inject = require('../lib/customRooms/inject');
+const store = require('../lib/customRooms/store');
+const ctrl = require('../controllers/customRooms.controller');
 const flow = require('../lib/customRooms/packageFlow');
 const mw = require('../middleware/customRooms');
 const bookings = require('../lib/customRooms/bookings');
@@ -91,6 +105,7 @@ assert.deepStrictEqual(normalizeRule({ ruleType: 'foo', ruleValue: 1 }, {}), { e
 assert.deepStrictEqual(normalizeRule({ ruleType: 'percent', ruleValue: 'x' }, {}), { error: 'rule_value_invalid' });
 assert.deepStrictEqual(normalizeRule({ ruleType: 'percent', ruleValue: 1, minPrice: 10, maxPrice: 5 }, {}), { error: 'min_max_invalid' });
 assert.strictEqual(finalPrice(null, r).final, null);
+assert.strictEqual(normalizeRule({ ruleType: 'percent', ruleValue: '-10.00', minPrice: null, maxPrice: null, minMarginType: null, minMarginValue: null }, {}).error, undefined, 'NULL из БД в min/max_price — не ошибка (регресс v1)');
 assert.strictEqual(ruleLabel(normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {})), '−10 %');
 assert.strictEqual(ruleLabel(normalizeRule({ ruleType: 'absolute', ruleValue: 1500 }, {})), '+1 500 ₽');
 
@@ -121,6 +136,197 @@ inject.recomputeRoomMins(vroom);
 assert.strictEqual(vroom.min_price, 86850); assert.strictEqual(vroom.meal_types[0].min_price, 86850);
 const rtMeals = { ...rt, mealTypes: ['UAI'] };
 assert.strictEqual(inject.pickSourceOffers(ltRoom, rtMeals).length, 1, 'ограничение по питанию');
+
+// --- v2: режим цены (fixed | rule) -------------------------------------------------------
+{
+    let pr = normalizePricing({ mode: 'fixed', fixedPrice: 1 });
+    assert.strictEqual(pr.error, undefined); assert.strictEqual(pr.fixedPriceUnit, 'total');
+    assert.strictEqual(computePrice(96500, 7, pr).final, 1, 'fixed total → 1 ₽ при любой цене LT');
+    assert.strictEqual(computePrice(96500, 7, pr).margin, -96499);
+    assert.strictEqual(computePrice(null, null, pr).final, 1, 'fixed без цены шаблона — всё равно наша цена');
+    pr = normalizePricing({ pricingMode: 'fixed', fixedPrice: 1000, fixedPriceUnit: 'per_night' });
+    assert.strictEqual(computePrice(96500, 7, pr).final, 7000, 'per_night × nights');
+    assert.strictEqual(computePrice(96500, null, pr).final, 1000, 'per_night без ночей → как total');
+    assert.deepStrictEqual(normalizePricing({ mode: 'fixed', fixedPrice: 0 }), { error: 'fixed_price_invalid' });
+    assert.deepStrictEqual(normalizePricing({ mode: 'fixed' }), { error: 'fixed_price_invalid' });
+    assert.deepStrictEqual(normalizePricing({ mode: 'rule', rule: null }), { error: 'rule_type_invalid' });
+    assert.deepStrictEqual(normalizePricing({ mode: 'nope' }), { error: 'pricing_mode_invalid' });
+    const prr = normalizePricing({ mode: 'rule', rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) });
+    assert.strictEqual(computePrice(96500, 7, prr).final, 86850, 'rule-режим не сломан'); assert.strictEqual(computePrice(96500, 7, prr).mode, 'rule');
+    assert.deepStrictEqual(pricingSnapshot(pr), { mode: 'fixed', fixedPrice: 1000, unit: 'per_night' });
+    assert.strictEqual(pricingSnapshot(prr).type, 'percent'); assert.strictEqual(pricingSnapshot(prr).mode, 'rule');
+    assert.strictEqual(pricingLabel(normalizePricing({ mode: 'fixed', fixedPrice: 1 })), '1 ₽ (фикс.)');
+    assert.strictEqual(pricingLabel(pr), '1 000 ₽/ночь (фикс.)'); assert.strictEqual(pricingLabel(prr), '−10 %');
+}
+
+// --- v2: витрина — связь по номеру, без предложения оператора --------------------------------
+const mkLtRoom = () => JSON.parse(JSON.stringify(ltRoom));
+// исходный номер, у которого НЕТ предложений «нашего» оператора (только Coral и Anex)
+const mkForeignRoom = () => ({ ...mkLtRoom(), offers: {
+    AI: [{ id: '8001', price: 98900, nights_count: 7, operator_id: 33, operator_name: 'Coral Travel', extras: { cheap: true } }, { id: '8002', price: 97500, nights_count: 7, operator_id: 44, operator_name: 'Anex' }],
+    UAI: [{ id: '8003', price: 112300, nights_count: 7, operator_id: 33, operator_name: 'Coral Travel' }],
+} });
+const fixedRt = (extra) => ({ id: 9, hotelId: 123, sourceRoomId: 501, operatorIds: [], operatorNames: [], mealTypes: null, sortOrder: 0, badge: 'Totus', packageTypes: [], active: true,
+    pricingMode: 'fixed', fixedPrice: 1, fixedPriceUnit: 'total', operatorName: 'Arlekino', operatorId: null, rule: null,
+    pricing: normalizePricing({ mode: 'fixed', fixedPrice: 1 }), content: { nameRu: 'Arlekino Deluxe' }, ...(extra || {}) });
+{
+    // шаблоны: без meal_types — одно самое дешёвое предложение номера (любой оператор)
+    let t = inject.pickTemplateOffers(mkForeignRoom(), fixedRt());
+    assert.strictEqual(t.length, 1); assert.strictEqual(t[0].meal, 'AI'); assert.strictEqual(t[0].offer.id, '8002', 'самое дешёвое — Anex 97 500');
+    t = inject.pickTemplateOffers(mkForeignRoom(), fixedRt({ mealTypes: ['AI', 'UAI', 'HB'] }));
+    assert.deepStrictEqual(t.map((x) => `${x.meal}:${x.offer.id}`), ['AI:8002', 'UAI:8003'], 'по одному самому дешёвому на каждое указанное питание; HB нет у номера — пропуск');
+    assert.deepStrictEqual(inject.pickTemplateOffers({ ...mkForeignRoom(), offers: {} }, fixedRt()), [], 'нет offers — нет шаблонов');
+    assert.strictEqual(inject.operatorIdOf(fixedRt()), 990009, 'синтетический operator_id'); assert.strictEqual(inject.operatorIdOf(fixedRt({ operatorId: 77 })), 77);
+    // замещение только при заданных operator_ids
+    const src = mkLtRoom();
+    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt()), 0); assert.strictEqual(src.offers.AI.length, 2, 'без operator_ids источник не трогаем');
+    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt({ operatorIds: [12] })), 2, 'operator_ids [12] → удалены AI/UAI Arlekino');
+    assert.strictEqual(src.offers.AI.length, 1); assert.strictEqual(src.offers.AI[0].operator_id, 33); assert.strictEqual(src.offers.UAI, undefined);
+}
+
+// injectRooms целиком — на подменённом store (без БД)
+const storeStub = { rts: [], settings: { ...store.DEFAULT_SETTINGS }, offerMap: [], priceLogs: [], seen: [] };
+const origStore = { getSettings: store.getSettings, activeRoomTypesForHotel: store.activeRoomTypesForHotel, saveOfferMap: store.saveOfferMap, logPrice: store.logPrice, touchLastSeen: store.touchLastSeen };
+store.getSettings = async () => storeStub.settings;
+store.activeRoomTypesForHotel = async () => storeStub.rts;
+store.saveOfferMap = async (entries) => { storeStub.offerMap.push(...entries); };
+store.logPrice = async (e) => { storeStub.priceLogs.push(e); };
+store.touchLastSeen = async (id, info) => { storeStub.seen.push({ id, ...info }); };
+const ltData = (rooms) => ({ search_type: 2, min_price: 96500, currency_code: 'RUB', result: rooms, filters: { meals: [{ id: 'AI', min_price: 96500 }, { id: 'UAI', min_price: 112300 }] } });
+async function injectChecks() {
+    // 1) номер в выдаче, предложений нашего оператора нет → наша комната есть с fixed ценой 1 ₽; источник и его операторы остаются
+    storeStub.rts = [fixedRt()]; storeStub.offerMap = []; storeStub.priceLogs = []; storeStub.seen = [];
+    let out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req1', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out.result.length, 2, 'наша комната вставлена (search_type package, hotelOnly=false, packageTypes пустые)');
+    const ours = out.result[1];
+    assert.strictEqual(ours.ID, 'totus-9'); assert.strictEqual(ours.room.name_ru, 'Arlekino Deluxe');
+    assert.strictEqual(ours.offers.AI.length, 1); assert.strictEqual(ours.offers.UAI, undefined, 'одно предложение — самое дешёвое питание');
+    const vo = ours.offers.AI[0];
+    assert.strictEqual(vo.price, 1); assert.strictEqual(vo.operator_name, 'Arlekino'); assert.strictEqual(vo.operator_id, 990009); assert.strictEqual(vo.price_per_night, 0);
+    assert.ok(inject.isVirtualOfferId(vo.id)); assert.strictEqual(vo.lt_extras.totus.sourceOfferId, '8002'); assert.strictEqual(vo.lt_extras.totus.mode, 'fixed');
+    assert.strictEqual(ours.min_price, 1); assert.strictEqual(ours.meal_types.length, 1); assert.strictEqual(ours.meal_types[0].id, 'AI'); assert.strictEqual(ours.meal_types[0].min_price, 1);
+    const srcOut = out.result[0];
+    assert.strictEqual(srcOut.offers.AI.length, 2, 'исходный номер не тронут'); assert.strictEqual(srcOut.offers.UAI.length, 1); assert.strictEqual(srcOut.min_price, 97500);
+    assert.strictEqual(out.filters.meals[0].min_price, 1, 'filters.meals AI = наша цена'); assert.strictEqual(out.filters.meals[1].min_price, 112300);
+    assert.strictEqual(out.min_price, 1, 'min_price отеля = наша цена, если она ниже');
+    assert.strictEqual(storeStub.offerMap.length, 1); assert.strictEqual(storeStub.offerMap[0].providerPrice, 97500, 'providerPrice карты = цена шаблона'); assert.strictEqual(storeStub.offerMap[0].finalPrice, 1); assert.strictEqual(storeStub.offerMap[0].operatorId, 44);
+    assert.strictEqual(storeStub.priceLogs[0].rule.mode, 'fixed'); assert.strictEqual(storeStub.priceLogs[0].rule.label, '1 ₽ (фикс.)');
+    assert.deepStrictEqual(storeStub.seen[0], { id: 9, providerPrice: 97500, finalPrice: 1, operator: 'Anex', marginClamped: false });
+
+    // 2) per_night × nights
+    storeStub.rts = [fixedRt({ fixedPrice: 1000, fixedPriceUnit: 'per_night', pricing: normalizePricing({ mode: 'fixed', fixedPrice: 1000, fixedPriceUnit: 'per_night' }) })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req2', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result[1].offers.AI[0].price, 7000, '1 000 ₽/ночь × 7'); assert.strictEqual(out.result[1].offers.AI[0].price_per_night, 1000);
+
+    // 3) meal_types заданы → по одному предложению на питание
+    storeStub.rts = [fixedRt({ mealTypes: ['AI', 'UAI'] })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req3', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result[1].offers.AI.length, 1); assert.strictEqual(out.result[1].offers.UAI.length, 1); assert.strictEqual(out.result[1].meal_types.length, 2);
+
+    // 4) замещение при operator_ids: Arlekino (12) из источника удалён, Coral остался; наша — рядом
+    storeStub.rts = [fixedRt({ operatorIds: [12], operatorNames: ['Arlekino'] })];
+    out = await inject.injectRooms(ltData([mkLtRoom()]), { requestId: 'req4', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result.length, 2);
+    assert.strictEqual(out.result[0].offers.AI.length, 1); assert.strictEqual(out.result[0].offers.AI[0].operator_id, 33); assert.strictEqual(out.result[0].offers.UAI, undefined);
+    assert.strictEqual(out.result[0].meal_types.length, 1, 'UAI у источника пропало'); assert.strictEqual(out.result[0].min_price, 98900);
+    assert.strictEqual(out.result[1].offers.AI[0].price, 1); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.sourceOfferId, '9001', 'шаблон — самое дешёвое (Arlekino 96 500)');
+
+    // 5) rule-режим не сломан: −10 % от самого дешёвого (Anex 97 500 → 87 750)
+    storeStub.rts = [fixedRt({ pricingMode: 'rule', fixedPrice: null, rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}), pricing: normalizePricing({ mode: 'rule', rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) }) })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req5', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result[1].offers.AI[0].price, 87750); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.mode, 'rule'); assert.strictEqual(out.result[1].offers.AI[0].operator_name, 'Arlekino');
+
+    // 6) номера нет в выдаче / нет offers / hotelOnly / packageTypes
+    storeStub.rts = [fixedRt({ sourceRoomId: 999 })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req6', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result.length, 1, 'нет источника — нет комнаты');
+    storeStub.rts = [fixedRt()];
+    out = await inject.injectRooms(ltData([{ ...mkForeignRoom(), offers: {} }]), { requestId: 'req7', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result.length, 1, 'у источника нет offers — нет комнаты');
+    storeStub.settings = { ...store.DEFAULT_SETTINGS, hotelOnly: true };
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req8', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out.result.length, 1, 'hotelOnly=true → при package не показываем');
+    storeStub.settings = { ...store.DEFAULT_SETTINGS };
+    storeStub.rts = [fixedRt({ packageTypes: ['hotel'] })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req9', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out.result.length, 1, 'packageTypes [hotel] → при package не показываем');
+    Object.assign(store, origStore);
+}
+
+// --- v2: сериализация строки БД (обратная совместимость) ------------------------------------
+{
+    const rowRule = { id: 3, hotel_id: 123, source_room_id: 501, operator_ids: '[12]', operator_names: '["Arlekino"]', meal_types: null, name_ru: 'X', rule_type: 'percent', rule_value: '-10.00', rounding: 1, min_price: null, max_price: null, min_margin_type: null, min_margin_value: null, package_types: '["hotel"]', badge: null, active: 1, sort_order: 0, last_provider_price: '96500.00', last_final_price: '86850.00', last_operator: 'Arlekino', last_seen_at: null, last_margin_clamped: 0, created_at: null, updated_at: null };
+    let s1 = store.serializeRoomType(rowRule, store.DEFAULT_SETTINGS);
+    assert.strictEqual(s1.pricingMode, 'rule', 'старая строка без pricing_mode с правилом → rule'); assert.strictEqual(s1.pricing.mode, 'rule'); assert.strictEqual(s1.previewPrice, 86850, 'previewPrice rule — от last_provider_price');
+    assert.strictEqual(s1.operatorName, 'Arlekino'); assert.strictEqual(s1.effectiveOperatorId, 990003); assert.strictEqual(s1.fixedPrice, null);
+    s1 = store.serializeRoomType({ ...rowRule, pricing_mode: 'fixed', fixed_price: '1.00', fixed_price_unit: 'total', operator_name: 'Arlekino', operator_id: null, rule_type: null, rule_value: null, operator_ids: '[]' }, store.DEFAULT_SETTINGS);
+    assert.strictEqual(s1.pricingMode, 'fixed'); assert.strictEqual(s1.previewPrice, 1, 'previewPrice fixed — сама цена'); assert.strictEqual(s1.rule, null); assert.strictEqual(s1.ruleType, null); assert.deepStrictEqual(s1.operatorIds, []);
+    s1 = store.serializeRoomType({ ...rowRule, pricing_mode: 'rule', rule_type: null, rule_value: null }, store.DEFAULT_SETTINGS);
+    assert.strictEqual(s1.pricing, null, 'rule без правила — на витрину не попадает');
+    assert.strictEqual(store.DEFAULT_SETTINGS.hotelOnly, false, 'hotelOnly по умолчанию выкл');
+}
+
+// --- v2: валидация Admin API и превью в hotelRooms -----------------------------------------------
+async function controllerChecks() {
+    const settings = { ...store.DEFAULT_SETTINGS };
+    const base = { hotelId: 123, sourceRoomId: 501, content: { nameRu: 'Arlekino Deluxe' } };
+    let v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'fixed', fixedPrice: 1 }, settings, null);
+    assert.ok(!v.error, v.error); assert.deepStrictEqual(v.value.operatorIds, [], 'операторы не обязательны'); assert.strictEqual(v.value.mealTypes, null);
+    assert.strictEqual(v.value.pricing.mode, 'fixed'); assert.strictEqual(v.value.fixedPrice, 1); assert.strictEqual(v.value.rule, null); assert.strictEqual(v.value.operatorName, 'Arlekino'); assert.deepStrictEqual(v.value.packageTypes, []);
+    v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'fixed', fixedPrice: 0 }, settings, null);
+    assert.strictEqual(v.error, 'fixed_price_invalid');
+    v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'fixed' }, settings, null);
+    assert.strictEqual(v.error, 'fixed_price_invalid');
+    v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'rule' }, settings, null);
+    assert.strictEqual(v.error, 'rule_type_invalid', 'rule без правила');
+    v = await ctrl._internal.validateRoomType({ ...base, operatorIds: [12], operatorNames: ['Arlekino'], rule: { ruleType: 'percent', ruleValue: -10 } }, settings, null);
+    assert.ok(!v.error, v.error); assert.strictEqual(v.value.pricing.mode, 'rule', 'тело v1 (rule без pricingMode) → rule'); assert.deepStrictEqual(v.value.operatorIds, [12]);
+    v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'fixed', fixedPrice: 1500, fixedPriceUnit: 'per_night', operatorName: 'Arlekino Tour', operatorId: 77, mealTypes: ['AI'] }, settings, null);
+    assert.ok(!v.error, v.error); assert.strictEqual(v.value.fixedPriceUnit, 'per_night'); assert.strictEqual(v.value.operatorName, 'Arlekino Tour'); assert.strictEqual(v.value.operatorId, 77); assert.deepStrictEqual(v.value.mealTypes, ['AI']);
+    v = await ctrl._internal.validateRoomType({ ...base, pricingMode: 'fixed', fixedPrice: 1, operatorId: 'abc' }, settings, null);
+    assert.strictEqual(v.error, 'operator_id_invalid');
+    // PUT: переключение существующей rule-комнаты на fixed
+    const existing = { ...fixedRt({ id: 3, pricingMode: 'rule', fixedPrice: null, ruleType: 'percent', ruleValue: -10, rounding: 1, minPrice: null, maxPrice: null, minMarginType: null, minMarginValue: null, rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) }), hotelName: 'Rixos', content: { nameRu: 'Old' } };
+    v = await ctrl._internal.validateRoomType({ pricingMode: 'fixed', fixedPrice: 1 }, settings, existing);
+    assert.ok(!v.error, v.error); assert.strictEqual(v.value.pricing.mode, 'fixed'); assert.strictEqual(v.value.rule.ruleType, 'percent', 'правило сохраняется на случай возврата'); assert.strictEqual(v.value.content.nameRu, 'Old');
+    v = await ctrl._internal.validateRoomType({}, settings, existing);
+    assert.ok(!v.error, v.error); assert.strictEqual(v.value.pricing.mode, 'rule', 'PUT без pricingMode — режим не меняется');
+    // hotelRooms preview
+    const rows = ctrl._internal.previewRows(mkForeignRoom(), fixedRt());
+    assert.strictEqual(rows.length, 1); assert.strictEqual(rows[0].final_price, 1); assert.strictEqual(rows[0].provider_price, 97500); assert.strictEqual(rows[0].mode, 'fixed'); assert.strictEqual(rows[0].our_operator_name, 'Arlekino');
+    const rowsRule = ctrl._internal.previewRows(mkForeignRoom(), fixedRt({ pricing: normalizePricing({ mode: 'rule', rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) }) }));
+    assert.strictEqual(rowsRule[0].final_price, 87750, 'preview rule — от самого дешёвого предложения номера');
+    assert.deepStrictEqual(ctrl._internal.previewRows(undefined, fixedRt()), []);
+    const d = ctrl._internal.diff({ ...existing }, { ...existing, pricingMode: 'fixed', fixedPrice: 1 });
+    assert.deepStrictEqual(Object.keys(d), ['pricingMode', 'fixedPrice']);
+}
+
+// --- v2: цепочка бронирования — при fixed цена не пересчитывается от свежей цены LT --------------
+async function flowChecks() {
+    const fixedP = normalizePricing({ mode: 'fixed', fixedPrice: 1 });
+    const pkgFresh = { success: true, package: { id: 555, price: 120000, nights_count: 7 } };
+    assert.strictEqual(flow.priceForPackage(fixedP, 120000, pkgFresh, 1), 1, 'fixed: свежая цена LT не влияет');
+    assert.strictEqual(flow.priceForPackage(normalizePricing({ mode: 'fixed', fixedPrice: 1000, fixedPriceUnit: 'per_night' }), 120000, pkgFresh, 7000), 7000);
+    assert.strictEqual(flow.priceForPackage(normalizePricing({ mode: 'fixed', fixedPrice: 1000, fixedPriceUnit: 'per_night' }), 120000, { package: { id: 1 } }, 7000), 7000, 'per_night без ночей в ответе → прежняя итоговая');
+    assert.strictEqual(flow.extractNights({ package: { dates_info: { nights_count: 7 } } }), 7);
+    const ruleP = normalizePricing({ mode: 'rule', rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) });
+    assert.strictEqual(flow.priceForPackage(ruleP, 120000, pkgFresh, 86850), 108000, 'rule: пересчёт от свежей цены');
+    let p = await flow.pricingFromSnapshot({ mode: 'fixed', fixedPrice: 1, unit: 'total' });
+    assert.strictEqual(p.mode, 'fixed'); assert.strictEqual(p.fixedPrice, 1);
+    p = await flow.pricingFromSnapshot({ type: 'percent', value: -10 });
+    assert.strictEqual(p.mode, 'rule', 'старый снимок без mode → rule'); assert.strictEqual(p.rule.ruleValue, -10);
+    assert.strictEqual(await flow.pricingFromSnapshot({}), null);
+    // afterPackageStep на fixed: комната удалена (getRoomType → null на фейковой БД) → снимок карты; priceChanged только при смене fixed цены
+    const mapF = { ltPackageId: '556', roomTypeId: 9, providerPrice: 97500, finalPrice: 1, rule: { mode: 'fixed', fixedPrice: 1, unit: 'total' }, operatorName: 'Arlekino', snapshot: null };
+    const upd = [];
+    const dbQ = dbMod.query;
+    dbMod.query = (sql, args) => (/UPDATE custom_room_package_map SET provider_price/.test(sql) ? (upd.push(args), Promise.resolve([{ affectedRows: 1 }])) : dbQ(sql, args));
+    const out = await flow.afterPackageStep({ success: true, package: { id: 556, price: 120000, nights_count: 7 }, full_price: 120000 }, mapF);
+    dbMod.query = dbQ;
+    assert.strictEqual(out.package.price, 1); assert.strictEqual(out.full_price, 1); assert.strictEqual(out.totus_room.finalPrice, 1); assert.strictEqual(out.totus_room.mode, 'fixed');
+    assert.strictEqual(out.totus_room.priceChanged, null, 'fixed: смена цены LT — не priceChanged'); assert.strictEqual(out.totus_room.providerPrice, 120000);
+    assert.deepStrictEqual(upd[0], [120000, 1, '556'], 'provider_price в карте обновлён (маржа), final прежний');
+}
 
 // --- переписывание цен пакета/заказа --------------------------------------------
 const pkg = { success: true, package: { id: 555, price: 96500, fuel_charge: 1200, hotel: { price: 96500, name: 'Rixos' }, extras: [{ price: 3000 }] }, full_price: 96500 };
@@ -183,7 +389,12 @@ assert.strictEqual(tb.statusLabel, 'Проверяем бронирование'
 assert.strictEqual(tb.paidAmount, 86850); assert.strictEqual(tb.paidAt, '2026-09-10T14:20:00.000Z'); assert.strictEqual(tb.refund, null); assert.strictEqual(tb.voucher, null);
 assert.deepStrictEqual(tb.hotel, { id: 123, name: 'Rixos Premium', stars: 5, city: 'Белек' }); assert.strictEqual(tb.room, 'Deluxe Sea View'); assert.strictEqual(tb.mealName, 'Всё включено');
 assert.strictEqual(tb.checkIn, '2026-10-12'); assert.strictEqual(tb.nights, 7); assert.strictEqual(tb.providerPrice, 96500); assert.strictEqual(tb.finalPrice, 86850);
-assert.deepStrictEqual(tb.priceRule, { type: 'percent', value: -10, label: '−10 %' });
+assert.deepStrictEqual(tb.priceRule, { mode: 'rule', type: 'percent', value: -10, label: '−10 %' });
+{
+    const tbf = bookings.serialize(bookings.fromRow({ ...rowBase, price_rule: '{"mode":"fixed","fixedPrice":1,"unit":"total","operator":"Arlekino"}', provider_price: '96500.00', final_price: '1.00' }));
+    assert.deepStrictEqual(tbf.priceRule, { mode: 'fixed', fixedPrice: 1, unit: 'total', label: '1 ₽ (фикс.)' }, 'снимок fixed в totus_booking');
+    assert.strictEqual(tbf.providerPrice, 96500, 'provider_price = цена шаблона LT'); assert.strictEqual(tbf.finalPrice, 1);
+}
 assert.ok(!('customer' in tb) && !('contact' in tb), 'в totus_booking нет ПД');
 const adm = bookings.serializeAdmin(bookings.fromRow(rowBase));
 assert.deepStrictEqual(adm.customer, { name: 'Иван Петров', phone: '79001112233', email: 'i@x.ru' });
@@ -301,7 +512,7 @@ async function bookingChecks() {
         res2.json({ err: 1 });
         setTimeout(() => {
             assert.deepStrictEqual(sent2, [{ err: 1 }], '4xx/5xx не трансформируем');
-            bookingChecks().then(() => {
+            injectChecks().then(controllerChecks).then(flowChecks).then(bookingChecks).then(() => {
                 console.log('ALL CUSTOM ROOMS CHECKS PASSED');
                 process.exit(0);
             }).catch((e) => { console.error(e); process.exit(1); });
