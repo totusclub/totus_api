@@ -1,4 +1,4 @@
-# Патч `app.js` — auth_token / forbidden / CORS для заказов (v3, 15.09.2026)
+# Патч `app.js` — auth_token / forbidden / CORS для заказов (v3, 15.09.2026; п. 7 — лог prebook, 16.09.2026)
 
 `app.js` (60 КБ) через GitHub-коннектор не проходит — владелец применяет диффы ниже **вручную** (IDE/сервер). Все правки точечные; проверка после применения: `node --check app.js && npm run check` (`scripts/check-custom-rooms*.js`), затем `pm2 restart api`.
 
@@ -166,6 +166,50 @@ CORS_ORIGINS=https://totus.club,https://www.totus.club,https://admin.totus.club,
 
 Desktop-приложение (Electron/Tauri) шлёт `Origin: null` или `file://` — при `AUTH_MODE=enforce` добавить его origin в список (или оставить `log`). После правки `.env` — `pm2 restart api` и проверить строку `[CORS] origins:` в логе.
 
+## 7. `POST /packages/prebook` — короткий `warn` вместо дампа ошибки
+
+Зачем: Level.Travel отвечает `400 Incorrect api version` на полном теле пребука (с `flight_pair_id` и `prebook_data`) — у партнёрского токена нет доступа к версии API, в которой живёт `prebook`. Все клиенты (`bookingPage/index.tsx`, `Booking.tsx`, `BookingScreen.tsx`) получают `skippable: true` и штатно продолжают оформление, то есть это не ошибка, а известное ограничение: в логе достаточно одной строки без дампа `{status, message, data}`.
+
+Замеры на проде (16.09.2026, `performance.now()` в браузере, отель 9022465):
+
+| Шаг | Время |
+|---|---|
+| `GET /packages/package_details` | 0.3–0.9 с |
+| `GET /packages/actualize` | **0.7 с (тёплый) … 11.3 с (первый вызов)** |
+| `POST /packages/flights` | ~1.0 с |
+| `POST /packages/prebook` — полное тело → `Incorrect api version`, **весь цикл 3.8 → 3.7 → 3.6 → 3.5 → 3.4** | **0.22–0.38 с** (≈ 45–75 мс на версию) |
+| `POST /packages/prebook` — `{package_id}` → `Package not found` / `500`, одна попытка | 0.09–0.15 с |
+
+Вывод: перебор версий стоит ~0.3 с и узким местом не является — дольше всего ждёт `actualize` (он же вызывается дважды: при открытии страницы бронирования и повторно перед созданием заказа). Ограничения `ltRequest`: `timeout: 60000`, `retries: 0`; худший случай — если LT перестанет отвечать (не ошибка, а «тишина»): 5 × 60 с = **до 5 минут**. Ниже — только правка лога; таймаут и отказ от самого вызова решаются отдельно.
+
+**Строки ≈ 307–314** (`app.post('/packages/prebook', …)`, блок `catch`):
+
+```js
+// было
+    } catch (error) {
+        logLtError('Package prebook error:', error);
+        const ltError = error.response?.data;
+        const msg = String(ltError?.error || ltError?.message || error.message || '');
+        const skippable =
+            msg.toLowerCase().includes('incorrect api version') ||
+            msg.toLowerCase().includes('api version');
+// стало
+    } catch (error) {
+        const ltError = error.response?.data;
+        const msg = String(ltError?.error || ltError?.message || error.message || '');
+        const skippable =
+            msg.toLowerCase().includes('incorrect api version') ||
+            msg.toLowerCase().includes('api version');
+        // известное ограничение партнёрского токена: клиенты пропускают шаг (skippable) — одна короткая строка вместо дампа
+        if (skippable) {
+            console.warn(`[LT prebook] skipped: ${msg}`);
+        } else {
+            logLtError('Package prebook error:', error);
+        }
+```
+
+Следующие строки (`const status = error.response?.status || 500;` и ответ клиенту) **не меняются** — поведение бронирования прежнее.
+
 ---
 
 ## Проверка после патча
@@ -176,3 +220,4 @@ Desktop-приложение (Electron/Tauri) шлёт `Origin: null` или `fi
 4. `POST /client/orders/<id>/sync` без `auth_token` в теле → синхронизация по токену из `orders.lt_auth_token` (для заказа без токена и без env — `400 Missing auth_token`).
 5. `GET /client/orders?order_id=<id>` без `auth_token` → список по токену заказа; для заказа без токена — `400 missing_auth_token`.
 6. После `POST /create-package` в логе строка `[LT create] order keys […] client keys […]` — сообщить, где LT отдаёт `auth_token`.
+7. Бронирование пакета с перелётом: в логе одна строка `[LT prebook] skipped: Incorrect api version` вместо блока `Package prebook error: {…}`; оформление доходит до оплаты как раньше.
