@@ -11,7 +11,9 @@
  * Бронирования без Level.Travel (бриф §2): для пакетов из карты custom_room_package_map middleware
  * отвечает САМ (без next()) на prebuild/prebook/flights (снимок пакета) и create-package (заказ у нас);
  * для внутренних заказов (order_id > 900000000) — на check_pay (VTB без LT notify), client/orders/:id,
- * client/orders/:id/sync, level_travel/notify-paid, payment/status. LT для них не вызывается нигде.
+ * client/orders/:id/sync, level_travel/notify-paid, payment/status, v3: GET /orders?order_id=<внутренний>
+ * (снимок из БД). LT для них не вызывается нигде. Для обычных (LT) заказов middleware ничего не подменяет:
+ * beforePackageDetails для не-виртуального tour_id → null, afterOrders дополняет totus_booking только внутренним.
  */
 
 const store = require('../lib/customRooms/store');
@@ -142,6 +144,12 @@ async function handle(req, res, next) {
         }
         await flow.beforePayment(req);
         return next();
+    }
+
+    // v3: GET /orders?order_id=<внутренний> — ответ из БД (internalOrders.orderSnapshot), в Level.Travel не ходим.
+    // Не-виртуальные/чужие order_id идут в app.js как раньше (LT-ветка с lt_auth_token заказа).
+    if (method === 'GET' && path === '/orders' && q.order_id !== undefined) {
+        if (await internal.orderSnapshot(req, res, q.order_id)) return;
     }
 
     if (method === 'GET' && (path === '/orders' || path === '/user/orders' || path === '/client/orders' || /^\/client\/orders\/[^/]+$/.test(path))) {

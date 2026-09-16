@@ -2,6 +2,8 @@
 // Правило цены, подмена номеров в выдаче LT, переписывание цен в пакете/заказе, маршруты middleware,
 // бронирования без Level.Travel (totus_booking, статусные переходы на фейковой БД, синтез prebook),
 // v2: связь по номеру LT без предложения оператора + фиксированная цена Arlekino (inject/packageFlow/controller/store),
+// v3 (15.09): один Room Type — наши предложения («Arlekino») внутри исходного номера LT первыми, LT нетронуты, связь только по room.id,
+//   перехват GET /orders?order_id=<внутренний> — отдельно: node scripts/check-custom-rooms-orders.js,
 // диагностика витрины — отдельно: node scripts/check-custom-rooms-diag.js (причины пропуска, /diagnostics, счётчики).
 'use strict';
 const assert = require('assert');
@@ -45,7 +47,7 @@ function fakeQuery(sql, args = []) {
     if (/^SELECT \* FROM custom_room_booking_events/i.test(q)) return Promise.resolve([fakeDb.events.map((e, i) => ({ id: i + 1, booking_id: 12, type: e.type, staff_name: e.staff, payload: JSON.stringify(e.payload), created_at: new Date() }))]);
     if (/^INSERT INTO orders/i.test(q)) { fakeDb.orders.push({ order_id: args[0], package: args[1] }); return Promise.resolve([{ insertId: 1 }]); }
     if (/^UPDATE orders|^DELETE FROM order_documents|^INSERT INTO order_documents/i.test(q)) return Promise.resolve([{ affectedRows: 1 }]);
-    if (/FROM custom_room_offer_map|FROM custom_room_searches|FROM orders|FROM custom_room_types/i.test(q)) return Promise.resolve([[]]);
+    if (/FROM custom_room_offer_map|FROM custom_room_searches|FROM orders|FROM custom_room_types|FROM order_documents/i.test(q)) return Promise.resolve([[]]);
     return Promise.reject(new Error(`fake db: unsupported query ${q.slice(0, 60)}`));
 }
 const dbMod = require('../db');
@@ -110,7 +112,7 @@ assert.strictEqual(normalizeRule({ ruleType: 'percent', ruleValue: '-10.00', min
 assert.strictEqual(ruleLabel(normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {})), '−10 %');
 assert.strictEqual(ruleLabel(normalizeRule({ ruleType: 'absolute', ruleValue: 1500 }, {})), '+1 500 ₽');
 
-// --- подмена в выдаче (без БД: pickSourceOffers / buildVirtualRoom / makeVirtualOffer) ---
+// --- v3: наши предложения внутри номера (без БД: pickSourceOffers / makeVirtualOffer / prependOffers / isArlekinoOffer) ---
 const ltRoom = {
     ID: 'r1', min_price: 96500, bonus_count: 0, cashback_identifier: null,
     meal_types: [{ id: 'AI', min_price: 96500, description: 'Всё включено' }, { id: 'UAI', min_price: 112300, description: 'Ультра' }],
@@ -127,15 +129,24 @@ assert.strictEqual(picked.length, 2, 'только Arlekino: AI и UAI');
 const v = inject.makeVirtualOffer(picked[0].offer, rt, 'AI', 1, finalPrice(96500, rt.rule));
 assert.ok(inject.isVirtualOfferId(v.id), 'виртуальный id');
 assert.strictEqual(v.price, 86850); assert.strictEqual(v.operator_name, 'Arlekino'); assert.strictEqual(v.price_per_night, 12407); assert.strictEqual(v.extras.cheap, false);
-assert.strictEqual(v.lt_extras.totus.sourceOfferId, '9001');
+assert.deepStrictEqual(v.lt_extras.totus, { custom: true, roomTypeId: 7, sourceOfferId: '9001', meal: 'AI', mode: 'rule', source: 'arlekino' }, 'метка нашего предложения (фронт делит группы по lt_extras.totus.custom)');
 assert.strictEqual(inject.isVirtualOfferId('9001'), false);
-const vroom = inject.buildVirtualRoom(ltRoom, rt, 'Totus');
-assert.strictEqual(vroom.ID, 'totus-7'); assert.strictEqual(vroom.room.name_ru, 'Deluxe Sea View'); assert.strictEqual(vroom.room.images[0].x900, 'https://api.totus.club/uploads/rooms/a.jpg', 'свои фото — абсолютный URL на totus_API (сайт и приложение не знают хост API для относительных путей)');
-assert.strictEqual(inject.buildVirtualRoom(ltRoom, { ...rt, content: { nameRu: 'X', images: [{ source: 'lt', url: 'https://img.cdn.level.travel/r.jpg' }] } }, 'Totus').room.images[0].x900, 'https://img.cdn.level.travel/r.jpg', 'фото LT не трогаем');
-assert.strictEqual(vroom.room.facilities[0].name, 'Балкон'); assert.strictEqual(vroom.room.id, 10000007);
-vroom.offers = { AI: [v] }; vroom.meal_types = [{ id: 'AI', min_price: 0 }];
-inject.recomputeRoomMins(vroom);
-assert.strictEqual(vroom.min_price, 86850); assert.strictEqual(vroom.meal_types[0].min_price, 86850);
+assert.strictEqual(inject.isArlekinoOffer(v), true); assert.strictEqual(inject.isArlekinoOffer(picked[0].offer), false, 'LT-предложение оператора «Arlekino» (id 12) — НЕ наше: по названию/оператору не делим');
+assert.strictEqual(inject.isArlekinoOffer(null), false); assert.strictEqual(inject.isArlekinoOffer({ lt_extras: null }), false);
+assert.strictEqual(ltRoom.offers.AI[0].price, 96500, 'шаблон не мутируется'); assert.strictEqual(ltRoom.offers.AI[0].lt_extras, undefined);
+assert.strictEqual(inject.buildVirtualRoom, undefined, 'v3: отдельная комната totus-<id> больше не строится'); assert.strictEqual(inject.VIRTUAL_ROOM_PREFIX, 'totus-');
+{
+    // prependOffers: наши — в начало, LT — как были; повторная вставка второго Room Type — после уже вставленных наших
+    const room = JSON.parse(JSON.stringify(ltRoom));
+    inject.prependOffers(room, 'AI', [v]);
+    assert.deepStrictEqual(room.offers.AI.map((o) => o.id), [v.id, '9001', '9002']);
+    const v2 = inject.makeVirtualOffer(picked[0].offer, { ...rt, id: 8 }, 'AI', 1, finalPrice(96500, rt.rule));
+    inject.prependOffers(room, 'AI', [v2]);
+    assert.deepStrictEqual(room.offers.AI.map((o) => o.id), [v.id, v2.id, '9001', '9002'], 'порядок Room Type сохраняется, LT после наших');
+    const mins = inject.recomputeRoomMins(room);
+    assert.strictEqual(room.min_price, 86850); assert.strictEqual(room.meal_types[0].min_price, 86850); assert.deepStrictEqual(mins, { AI: 86850, UAI: 112300 });
+    assert.strictEqual(inject.pickTemplateOffers(room, { ...rt, operatorIds: [], mealTypes: null })[0].offer.id, '9001', 'наши предложения шаблоном не бывают (самое дешёвое LT, а не наше 86 850)');
+}
 const rtMeals = { ...rt, mealTypes: ['UAI'] };
 assert.strictEqual(inject.pickSourceOffers(ltRoom, rtMeals).length, 1, 'ограничение по питанию');
 
@@ -179,11 +190,11 @@ const fixedRt = (extra) => ({ id: 9, hotelId: 123, sourceRoomId: 501, operatorId
     assert.deepStrictEqual(t.map((x) => `${x.meal}:${x.offer.id}`), ['AI:8002', 'UAI:8003'], 'по одному самому дешёвому на каждое указанное питание; HB нет у номера — пропуск');
     assert.deepStrictEqual(inject.pickTemplateOffers({ ...mkForeignRoom(), offers: {} }, fixedRt()), [], 'нет offers — нет шаблонов');
     assert.strictEqual(inject.operatorIdOf(fixedRt()), 990009, 'синтетический operator_id'); assert.strictEqual(inject.operatorIdOf(fixedRt({ operatorId: 77 })), 77);
-    // замещение только при заданных operator_ids
-    const src = mkLtRoom();
-    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt()), 0); assert.strictEqual(src.offers.AI.length, 2, 'без operator_ids источник не трогаем');
-    assert.strictEqual(inject.removeReplacedOffers(src, fixedRt({ operatorIds: [12] })), 2, 'функция замещения работает, но на витрине не вызывается');
-    assert.strictEqual(src.offers.AI.length, 1); assert.strictEqual(src.offers.AI[0].operator_id, 33); assert.strictEqual(src.offers.UAI, undefined);
+    // v3: замещения предложений LT нет вообще — функции removeReplacedOffers больше нет
+    assert.strictEqual(inject.removeReplacedOffers, undefined, 'v3: предложения LT никогда не удаляются');
+    // связь только по room.id — запасной связи по названию нет
+    assert.deepStrictEqual(inject.findSourceIndex([mkLtRoom()], new Map([[501, 0]]), fixedRt()), { idx: 0, by: 'id' });
+    assert.strictEqual(inject.findSourceIndex([mkLtRoom()], new Map([[501, 0]]), fixedRt({ sourceRoomId: 777, sourceRoomName: 'Deluxe Room Sea View', sourceSnapshot: { name_ru: 'Deluxe Room Sea View' } })), null, 'то же название под другим id — не источник');
 }
 
 // injectRooms целиком — на подменённом store (без БД)
@@ -197,19 +208,29 @@ store.touchLastSeen = async (id, info) => { storeStub.seen.push({ id, ...info })
 store.markChecked = async () => true; // причины пропуска — scripts/check-custom-rooms-diag.js
 const ltData = (rooms) => ({ search_type: 2, min_price: 96500, currency_code: 'RUB', result: rooms, filters: { meals: [{ id: 'AI', min_price: 96500 }, { id: 'UAI', min_price: 112300 }] } });
 async function injectChecks() {
-    // 1) номер в выдаче, предложений нашего оператора нет → наша комната есть с fixed ценой 1 ₽; источник и его операторы остаются
+    const ourOffers = (room) => Object.values(room.offers).flat().filter(inject.isArlekinoOffer);
+    const ltOffers = (room) => Object.values(room.offers).flat().filter((o) => !inject.isArlekinoOffer(o));
+    // 1) номер в выдаче, предложений нашего оператора нет → наше предложение fixed 1 ₽ ВНУТРИ номера (первым в offers[AI]); LT нетронуты
     storeStub.rts = [fixedRt()]; storeStub.offerMap = []; storeStub.priceLogs = []; storeStub.seen = [];
-    let out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req1', hotelId: 123, searchType: 'package' });
-    assert.strictEqual(out.result.length, 2, 'наша комната вставлена (search_type package, hotelOnly=false, packageTypes пустые)');
-    const ours = out.result[1];
-    assert.strictEqual(ours.ID, 'totus-9'); assert.strictEqual(ours.room.name_ru, 'Arlekino Deluxe');
-    assert.strictEqual(ours.offers.AI.length, 1); assert.strictEqual(ours.offers.UAI, undefined, 'одно предложение — самое дешёвое питание');
-    const vo = ours.offers.AI[0];
+    const body1 = ltData([mkForeignRoom()]);
+    let out = await inject.injectRooms(body1, { requestId: 'req1', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out.result.length, 1, 'v3: отдельная комната не добавляется (search_type package, hotelOnly=false, packageTypes пустые)');
+    assert.ok(!out.result.some((r) => String(r.ID).startsWith('totus-')), 'нет комнат totus-*');
+    const room1 = out.result[0];
+    assert.strictEqual(room1.ID, 'r1'); assert.strictEqual(room1.room.id, 501); assert.strictEqual(room1.room.name_ru, 'Deluxe Room Sea View', 'карточка одна — LT-шная, контент Room Type не применяется');
+    assert.strictEqual(room1.offers.AI.length, 3, 'наше предложение добавлено в offers[AI]'); assert.strictEqual(room1.offers.UAI.length, 1, 'одно предложение — самое дешёвое питание');
+    const vo = room1.offers.AI[0];
+    assert.ok(inject.isArlekinoOffer(vo), 'наше — первое'); assert.ok(inject.isVirtualOfferId(vo.id));
     assert.strictEqual(vo.price, 1); assert.strictEqual(vo.operator_name, 'Arlekino'); assert.strictEqual(vo.operator_id, 990009); assert.strictEqual(vo.price_per_night, 0);
-    assert.ok(inject.isVirtualOfferId(vo.id)); assert.strictEqual(vo.lt_extras.totus.sourceOfferId, '8002'); assert.strictEqual(vo.lt_extras.totus.mode, 'fixed');
-    assert.strictEqual(ours.min_price, 1); assert.strictEqual(ours.meal_types.length, 1); assert.strictEqual(ours.meal_types[0].id, 'AI'); assert.strictEqual(ours.meal_types[0].min_price, 1);
-    const srcOut = out.result[0];
-    assert.strictEqual(srcOut.offers.AI.length, 2, 'исходный номер не тронут'); assert.strictEqual(srcOut.offers.UAI.length, 1); assert.strictEqual(srcOut.min_price, 97500);
+    assert.deepStrictEqual(vo.lt_extras.totus, { custom: true, roomTypeId: 9, sourceOfferId: '8002', meal: 'AI', mode: 'fixed', source: 'arlekino' });
+    assert.strictEqual(vo.nights_count, 7, 'клон сохраняет nights_count (фильтры сайта)');
+    assert.deepStrictEqual(room1.offers.AI.slice(1).map((o) => [o.id, o.price, o.operator_id]), [['8001', 98900, 33], ['8002', 97500, 44]], 'LT offers нетронуты: порядок, id, цены');
+    assert.deepStrictEqual(ltOffers(room1).map((o) => o.id), ['8001', '8002', '8003']);
+    assert.ok(ltOffers(room1).every((o) => o.lt_extras === undefined), 'у LT-предложений lt_extras не появляется');
+    assert.strictEqual(room1.offers.AI[1].extras.cheap, true, 'метки LT у их предложений на месте');
+    assert.deepStrictEqual(room1.lt_extras.totus, { roomTypeId: 9, customOffers: 1, sourceRoomId: 501 }, 'метка номера');
+    assert.strictEqual(room1.min_price, 1, 'min_price номера = 1 при fixed 1 ₽'); assert.strictEqual(room1.meal_types.length, 2);
+    assert.strictEqual(room1.meal_types.find((m) => m.id === 'AI').min_price, 1); assert.strictEqual(room1.meal_types.find((m) => m.id === 'UAI').min_price, 112300);
     assert.strictEqual(out.filters.meals[0].min_price, 1, 'filters.meals AI = наша цена'); assert.strictEqual(out.filters.meals[1].min_price, 112300);
     assert.strictEqual(out.min_price, 1, 'min_price отеля = наша цена, если она ниже');
     assert.strictEqual(storeStub.offerMap.length, 1); assert.strictEqual(storeStub.offerMap[0].providerPrice, 97500, 'providerPrice карты = цена шаблона'); assert.strictEqual(storeStub.offerMap[0].finalPrice, 1); assert.strictEqual(storeStub.offerMap[0].operatorId, 44);
@@ -219,40 +240,58 @@ async function injectChecks() {
     // 2) per_night × nights
     storeStub.rts = [fixedRt({ fixedPrice: 1000, fixedPriceUnit: 'per_night', pricing: normalizePricing({ mode: 'fixed', fixedPrice: 1000, fixedPriceUnit: 'per_night' }) })];
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req2', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result[1].offers.AI[0].price, 7000, '1 000 ₽/ночь × 7'); assert.strictEqual(out.result[1].offers.AI[0].price_per_night, 1000);
+    assert.strictEqual(out.result[0].offers.AI[0].price, 7000, '1 000 ₽/ночь × 7'); assert.strictEqual(out.result[0].offers.AI[0].price_per_night, 1000);
+    assert.strictEqual(out.result[0].min_price, 7000);
 
-    // 3) meal_types заданы → по одному предложению на питание
+    // 3) meal_types заданы → по одному предложению на питание, каждое — первым в своей группе
     storeStub.rts = [fixedRt({ mealTypes: ['AI', 'UAI'] })];
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req3', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result[1].offers.AI.length, 1); assert.strictEqual(out.result[1].offers.UAI.length, 1); assert.strictEqual(out.result[1].meal_types.length, 2);
+    assert.strictEqual(out.result[0].offers.AI.length, 3); assert.strictEqual(out.result[0].offers.UAI.length, 2);
+    assert.ok(inject.isArlekinoOffer(out.result[0].offers.AI[0]) && inject.isArlekinoOffer(out.result[0].offers.UAI[0]));
+    assert.strictEqual(out.result[0].offers.UAI[0].lt_extras.totus.sourceOfferId, '8003'); assert.strictEqual(out.result[0].lt_extras.totus.customOffers, 2);
+    assert.strictEqual(out.result[0].meal_types.find((m) => m.id === 'UAI').min_price, 1);
 
-    // 4) operator_ids заданы: предложения источника НЕ удаляются (с 15.09 показываются оба), шаблон — из указанных операторов
+    // 4) operator_ids заданы: предложения источника НЕ удаляются, шаблон — самое дешёвое (LT-оператор «Arlekino» id 12 — это НЕ наша группа)
     storeStub.rts = [fixedRt({ operatorIds: [12], operatorNames: ['Arlekino'] })];
     out = await inject.injectRooms(ltData([mkLtRoom()]), { requestId: 'req4', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result.length, 2);
-    assert.strictEqual(out.result[0].offers.AI.length, 2, 'источник не тронут'); assert.strictEqual(out.result[0].offers.UAI.length, 1);
-    assert.strictEqual(out.result[0].meal_types.length, 2, 'питание источника сохранено'); assert.strictEqual(out.result[0].min_price, 96500);
-    assert.strictEqual(out.result[1].offers.AI[0].price, 1); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.sourceOfferId, '9001', 'шаблон — самое дешёвое (Arlekino 96 500)');
+    assert.strictEqual(out.result.length, 1);
+    assert.strictEqual(out.result[0].offers.AI.length, 3, 'источник не тронут + наше'); assert.strictEqual(out.result[0].offers.UAI.length, 1);
+    assert.deepStrictEqual(ltOffers(out.result[0]).map((o) => o.id), ['9001', '9002', '9003']);
+    assert.strictEqual(out.result[0].meal_types.length, 2, 'питание источника сохранено');
+    assert.strictEqual(out.result[0].offers.AI[0].price, 1); assert.strictEqual(out.result[0].offers.AI[0].lt_extras.totus.sourceOfferId, '9001', 'шаблон — самое дешёвое (LT 96 500)');
+    assert.strictEqual(ourOffers(out.result[0]).length, 1); assert.strictEqual(out.result[0].offers.AI[1].operator_name, 'Arlekino'); assert.ok(!inject.isArlekinoOffer(out.result[0].offers.AI[1]), 'одноимённый оператор LT не считается нашим');
 
-    // 5) rule-режим не сломан: −10 % от самого дешёвого (Anex 97 500 → 87 750)
+    // 5) rule-режим не сломан: −10 % от самого дешёвого (Anex 97 500 → 87 750); min_price номера = наша цена (ниже LT)
     storeStub.rts = [fixedRt({ pricingMode: 'rule', fixedPrice: null, rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}), pricing: normalizePricing({ mode: 'rule', rule: normalizeRule({ ruleType: 'percent', ruleValue: -10 }, {}) }) })];
     out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req5', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result[1].offers.AI[0].price, 87750); assert.strictEqual(out.result[1].offers.AI[0].lt_extras.totus.mode, 'rule'); assert.strictEqual(out.result[1].offers.AI[0].operator_name, 'Arlekino');
+    assert.strictEqual(out.result[0].offers.AI[0].price, 87750); assert.strictEqual(out.result[0].offers.AI[0].lt_extras.totus.mode, 'rule'); assert.strictEqual(out.result[0].offers.AI[0].operator_name, 'Arlekino');
+    assert.strictEqual(out.result[0].min_price, 87750); assert.strictEqual(out.filters.meals[0].min_price, 87750);
+    storeStub.rts = [fixedRt({ pricing: normalizePricing({ mode: 'fixed', fixedPrice: 150000 }) })];
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req5b', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out.result[0].min_price, 97500, 'наше дороже LT → минимум остаётся LT'); assert.strictEqual(out.filters.meals[0].min_price, 97500);
 
-    // 6) номера нет в выдаче / нет offers / hotelOnly / packageTypes (причины пропуска — check-custom-rooms-diag.js)
-    storeStub.rts = [fixedRt({ sourceRoomId: 999 })];
-    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req6', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result.length, 1, 'нет источника — нет комнаты');
+    // 6) номера нет в выдаче (по имени не ищем) / нет offers / hotelOnly / packageTypes (причины пропуска — check-custom-rooms-diag.js)
+    storeStub.rts = [fixedRt({ sourceRoomId: 999, sourceRoomName: 'Deluxe Room Sea View', sourceSnapshot: { name_ru: 'Deluxe Room Sea View', name_en: 'Deluxe' } })];
+    let body = ltData([mkForeignRoom()]);
+    out = await inject.injectRooms(body, { requestId: 'req6', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(out, body, 'нет источника по id — тело без изменений (название совпадает, но fallback по имени убран)');
+    assert.strictEqual(ourOffers(out.result[0]).length, 0); assert.strictEqual(out.result[0].lt_extras.totus, undefined);
     storeStub.rts = [fixedRt()];
     out = await inject.injectRooms(ltData([{ ...mkForeignRoom(), offers: {} }]), { requestId: 'req7', hotelId: 123, searchType: 'hotel' });
-    assert.strictEqual(out.result.length, 1, 'у источника нет offers — нет комнаты');
+    assert.strictEqual(out.result.length, 1); assert.deepStrictEqual(out.result[0].offers, {}, 'у источника нет offers — ничего не добавляем');
     storeStub.settings = { ...store.DEFAULT_SETTINGS, hotelOnly: true };
-    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req8', hotelId: 123, searchType: 'package' });
-    assert.strictEqual(out.result.length, 1, 'hotelOnly=true → при package не показываем');
+    body = ltData([mkForeignRoom()]);
+    out = await inject.injectRooms(body, { requestId: 'req8', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out, body, 'hotelOnly=true → при package не показываем');
     storeStub.settings = { ...store.DEFAULT_SETTINGS };
     storeStub.rts = [fixedRt({ packageTypes: ['hotel'] })];
-    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req9', hotelId: 123, searchType: 'package' });
-    assert.strictEqual(out.result.length, 1, 'packageTypes [hotel] → при package не показываем');
+    body = ltData([mkForeignRoom()]);
+    out = await inject.injectRooms(body, { requestId: 'req9', hotelId: 123, searchType: 'package' });
+    assert.strictEqual(out, body, 'packageTypes [hotel] → при package не показываем (offer/Room Type не попадает в пакетную выдачу)');
+    out = await inject.injectRooms(ltData([mkForeignRoom()]), { requestId: 'req9b', hotelId: 123, searchType: 'hotel' });
+    assert.strictEqual(ourOffers(out.result[0]).length, 1, 'packageTypes [hotel] при hotel — есть');
+
+    // два Room Type на один номер и откат при сбое карты предложений — scripts/check-custom-rooms-diag.js
     Object.assign(store, origStore);
 }
 
@@ -496,6 +535,8 @@ async function bookingChecks() {
     assert.strictEqual(await internal.resolveInternalOrder({ orderId: 'ORDER48311' }), null);
     assert.strictEqual(await internal.skipLtNotify({ body: { order_id: '48311' }, path: '/payment/status' }, {}), false);
     assert.strictEqual(await internal.clientOrder({}, {}, '48311', {}), false);
+    // v3: GET /orders?order_id=<внутренний> (orderSnapshot, requireAuth user|staff, 403 чужому, next() для LT) — scripts/check-custom-rooms-orders.js
+    assert.strictEqual(await internal.orderSnapshot({}, {}, '48311'), false, 'LT-заказ → next()');
     const sent = [];
     const res = { status(c) { this.code = c; return this; }, json(b) { sent.push([this.code, b]); this.headersSent = true; return this; } };
     assert.strictEqual(await internal.skipLtNotify({ body: { order_id: 'ORDER900000012' }, path: '/level_travel/notify-paid' }, res), true);
