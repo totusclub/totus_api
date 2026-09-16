@@ -94,6 +94,15 @@ async function handle(req, res, next) {
             return res.status(410).json({ success: false, error: 'offer_expired', message: 'Предложение устарело — обновите список номеров' });
         }
         if (offer) wrapJson(res, (body) => flow.afterPackageDetails(body, offer));
+        // exclusive («продавать только наши предложения»): LT-предложение в нашем отеле/номере продавать нельзя —
+        // 410 вместо ответа LT (устаревшая страница или deep-link). Обычные отели ответ LT не меняет.
+        else wrapJson(res, async (body) => {
+            const blocked = await flow.afterForeignPackageDetails(body);
+            if (!blocked) return body;
+            diag.log(`hotel ${flow.extractHotelId(body)}: exclusive — LT package_details blocked (410 offer_expired)`);
+            res.status(blocked.status);
+            return blocked.body;
+        });
         return next();
     }
 
