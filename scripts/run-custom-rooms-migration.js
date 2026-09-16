@@ -228,6 +228,10 @@ const ROOM_TYPE_COLUMNS = [
   // диагностика витрины: причина, по которой комната не вставлена в последний ответ /hotels-rooms, и время проверки
   ['last_skip_reason', 'VARCHAR(255) NULL'],
   ['last_checked_at', 'DATETIME NULL'],
+  // «Наш отель» (бриф BRIEF_EXCLUSIVE, 16.09.2026): продавать только наши предложения.
+  // По умолчанию 0 — витрина работает как раньше (обе группы предложений); включает владелец в админке.
+  ['exclusive', 'TINYINT(1) NOT NULL DEFAULT 0'],
+  ['exclusive_scope', "ENUM('room','hotel') NOT NULL DEFAULT 'room'"],
 ];
 
 async function addColumns(table, columns) {

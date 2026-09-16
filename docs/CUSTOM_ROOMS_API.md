@@ -89,6 +89,46 @@ const isArlekinoOffer = (o) => Boolean(o?.lt_extras?.totus?.custom); // НЕ п�
 
 Для каждой активной Room Type отеля в лог пишется одна строка `[custom-rooms] hotel <hotel_id>: rt <id> — injected (…) | skipped:<reason>`, причина сохраняется в `custom_room_types.last_skip_reason` + `last_checked_at` (в ответах админки — `lastSkipReason`, `lastCheckedAt`; при вставке сбрасывается в `null`). Причины: `no_pricing` (режим цены без цены/правила), `search_type (…)` (`hotelOnly` или `packageTypes` не совпали с типом поиска), `source_room_missing (source <id>; ids in result: …)` (номера с таким `room.id` нет в выдаче — перечислены id, которые есть), `no_offers (…)` (у источника нет предложений / нет нужного питания), `no_priced_offers`, `offer_map_failed (…)` (не удалось записать карту предложений — клиент получил оригинал LT).
 
+### 2.3. Эксклюзивные отели/номера — «продавать только наши предложения» (решение владельца 16.09.2026)
+
+Требование владельца: «если отель заведён у нас и для него указан Room Type, оффер Level.Travel не должен регистрироваться в нашей базе — только оффер Arlekino». Реализовано **явным флагом на Room Type, выключенным по умолчанию**: пока владелец его не включил, витрина работает ровно как в 2.2 (обе группы предложений).
+
+**Поля Room Type** (`custom_room_types`, миграция `node scripts/run-custom-rooms-migration.js`, идемпотентно):
+
+| Поле API | Колонка | Значение |
+|---|---|---|
+| `exclusive` | `exclusive TINYINT(1) NOT NULL DEFAULT 0` | `true` — продавать в этом отеле/номере только наши предложения |
+| `exclusiveScope` | `exclusive_scope ENUM('room','hotel') NOT NULL DEFAULT 'room'` | `room` — только исходный номер Room Type (`source_room_id`); `hotel` — все номера отеля |
+
+До миграции колонок нет — модуль **не** выключается (они необязательные, как `last_skip_reason`): `exclusive` всегда `false`, `exclusiveScope` — `'room'`, в `/diagnostics` видно `exclusiveColumns: false`.
+
+**Правило витрины** (`lib/customRooms/inject.js`, `applyExclusive`). Если у отеля есть хотя бы один **активный** Room Type с `exclusive = 1`, то в ответе `GET /hotels-rooms` после вставки наших offers:
+
+- удаляются все предложения Level.Travel — при `scope='room'` только в номерах с `room.id = source_room_id` таких Room Type, при `scope='hotel'` во всех номерах отеля (достаточно одного Room Type со `scope='hotel'`);
+- **наши offers (`offer.lt_extras.totus.custom === true`) не удаляются никогда**;
+- питание, от которого не осталось предложений, убирается из `room.offers` и `room.meal_types`; номер, у которого не осталось ни одного предложения, убирается из `result`;
+- пересчитываются `room.min_price`, `room.meal_types[].min_price`, `filters.meals[].min_price` (питание без предложений исчезает из фильтров) и `min_price` отеля — при включённом exclusive минимум ставится **точным** значением (он может вырасти, если предложения LT были дешевле наших);
+- в лог одна строка: `[custom-rooms] hotel <hotel_id>: exclusive <room|hotel> — LT offers hidden: <n> (rooms dropped: <m>)`.
+
+Если у отеля нет активного exclusive Room Type — не выполняется ни одной дополнительной проверки и ни одного запроса, ответ LT не меняется.
+
+**Бронирование** (`lib/customRooms/packageFlow.js`, `afterForeignPackageDetails`). Устаревшая страница или прямой deep-link на LT-предложение в таком отеле: `GET /packages/package_details?tour_id=<не наш>` → middleware проверяет `package.hotel.id` (или `package.hotel_id`) и, при `scope='room'`, id номера (`package.room_id` / `package.room.id` / `package.hotel.room_id`) и отвечает
+
+```json
+410 { "success": false, "error": "offer_expired", "message": "Предложение больше не доступно — обновите список номеров" }
+```
+
+— LT-заказ не создаётся, в `orders` и `custom_room_bookings` ничего не пишется. Наш `tour_id` (`t…`) идёт обычным путём. Список exclusive-отелей кэшируется в процессе на 60 с и сбрасывается на любое изменение Room Type, поэтому для обычных отелей это не даёт ни одного дополнительного запроса; при `scope='room'`, если id номера в ответе LT определить не удалось, предложение **не** блокируется (обычный поток не ломается), и любая ошибка проверки тоже отдаёт ответ LT как есть.
+
+**Админка** (`/api/admin/rooms/*`):
+
+- `POST/PUT /room-types` принимают `exclusive: boolean` и `exclusiveScope: 'room'|'hotel'` (также `exclusive_scope`); не переданы — значение не меняется (у новых `false` / `'room'`). Ошибка `400 exclusive_scope_invalid`;
+- `serializeRoomType` отдаёт `exclusive`, `exclusiveScope` во всех ответах с Room Type; изменения флага попадают в change-log (`GET /room-types/:id/change-log`);
+- `POST /room-types/:id/duplicate` копирует оба поля (копия, как и раньше, создаётся выключенной);
+- `GET /hotels/:hotelId/rooms` дополнительно отдаёт `exclusive: { active: boolean, scope: 'room'|'hotel'|null, rooms: [room_id] }` и у каждого номера `rooms[].exclusive: boolean` — номера, которые закрыты для Level.Travel.
+
+**Проверки**: `node scripts/check-custom-rooms-exclusive.js` (входит в `npm run check`).
+
 ### 2.1. v2: связь по номеру и фиксированная цена (решение владельца 15.09.2026)
 
 Владелец в админке выбирает **конкретный номер Level.Travel** (`source_room_id`). Если пользователь любым способом в поиске приходит к этому номеру — независимо от даты, ночей, гостей и типа поиска — внутри него показывается наше предложение как оператор **Arlekino** с ценой из админки (1 ₽ → показываем 1 ₽). Связь — по номеру, а **не** по наличию в выдаче предложения конкретного оператора (так было в v1, и из-за этого Room Type не отображался).
@@ -113,7 +153,7 @@ const isArlekinoOffer = (o) => Boolean(o?.lt_extras?.totus?.custom); // НЕ п�
 - `GET /hotels/:hotelId/rooms?request_id=…` → `{ operators: [{operator_id, operator_name, rooms: [{room_id, ID, room, offers: [{id, meal, price, nights_count, extras, availability}], room_types: [id]}]}], rooms: [{…, room_types: [id]}], room_types: [{…, ruleLabel, pricingLabel, status: fixed|active|inactive|source_missing|no_offers|no_pricing|margin_clamped, preview: [{offer_id, meal, operator_id, operator_name, nights_count, provider_price, final_price, margin, margin_percent, margin_clamped, mode, our_operator_id, our_operator_name}]}], settings }` (v3: статуса `replacing` и поля `replaces_offer_ids` нет — предложения LT не замещаются; `active` — rule-режим, номер в выдаче, наши предложения внутри номера). v2: наши Room Type показываются под исходным номером **всегда**, когда номер есть в выдаче (`rooms[].room_types`); `status: fixed` — активна, номер в выдаче, фиксированная цена; preview для `fixed` — фиксированная цена, для `rule` — от самого дешёвого предложения номера (по питанию).
 - `GET /room-types?hotel_id&active=1|0&q` → `{ room_types, settings }`; `GET /room-types/:id`. Объект Room Type v2: `+ pricingMode: fixed|rule, fixedPrice, fixedPriceUnit: total|per_night, operatorName, operatorId, effectiveOperatorId, pricing, previewPrice` (fixed → сама цена; rule → расчёт от `last.providerPrice`, `null`, если ещё не видели); `rule/ruleType/ruleValue` могут быть `null`; диагностика: `lastSkipReason` (причина, по которой комната не вставлена в последний ответ `/hotels-rooms`; `null` — вставлена или ещё не проверялась), `lastCheckedAt` (также в `last.skipReason/last.checkedAt`).
 - `GET /diagnostics?recheck=1` — раздел 7 (отвечает и при `503 custom_rooms_not_migrated` у остальных маршрутов).
-- `POST /room-types` — создать: `{ hotelId, hotelName, hotelStars, hotelCity, sourceRoomId, sourceRoomName, sourceSnapshot?, source?: {room}, pricingMode: 'fixed'|'rule' (default fixed; тело v1 с rule и без pricingMode → rule), fixedPrice, fixedPriceUnit?: 'total'|'per_night', operatorName?: 'Arlekino', operatorId?, operatorIds?: [12], operatorNames?: ["Arlekino"], mealTypes?: ["AI"], content: {nameRu, nameEn, accommodation, area, view, description, facilities: [..], images: [{source:'lt'|'upload', url}]}, rule?: {ruleType: percent|absolute, ruleValue, rounding, minPrice, maxPrice, minMarginType?, minMarginValue?}, packageTypes?: [] (пустые = любой тип поиска), badge, active, sortOrder }`. Валидация: `fixed` → `fixedPrice > 0`; `rule` → правило как раньше. Если передан `source.room` (объект `room` из выдачи) и нет `content` — контент и фото LT предзаполняются.
+- `POST /room-types` — создать: `{ hotelId, hotelName, hotelStars, hotelCity, sourceRoomId, sourceRoomName, sourceSnapshot?, source?: {room}, pricingMode: 'fixed'|'rule' (default fixed; тело v1 с rule и без pricingMode → rule), fixedPrice, fixedPriceUnit?: 'total'|'per_night', operatorName?: 'Arlekino', operatorId?, operatorIds?: [12], operatorNames?: ["Arlekino"], mealTypes?: ["AI"], content: {nameRu, nameEn, accommodation, area, view, description, facilities: [..], images: [{source:'lt'|'upload', url}]}, rule?: {ruleType: percent|absolute, ruleValue, rounding, minPrice, maxPrice, minMarginType?, minMarginValue?}, packageTypes?: [] (пустые = любой тип поиска), exclusive?: false, exclusiveScope?: 'room'|'hotel', badge, active, sortOrder }`. Валидация: `fixed` → `fixedPrice > 0`; `rule` → правило как раньше. Если передан `source.room` (объект `room` из выдачи) и нет `content` — контент и фото LT предзаполняются.
 - `PUT /room-types/:id` — те же поля (частично; `pricingMode` не передан — режим не меняется); `POST /room-types/:id/toggle {active?}`; `DELETE /room-types/:id`.
 - `POST /room-types/:id/duplicate { name?, copyContent?: true, copyRule?: true, images?: 'same'|'none' }` — копия создаётся выключенной (режим цены, фиксированная цена и оператор копируются).
 - `POST /room-types/preview-price { pricingMode?: 'rule', rule, offers: [{operator_name, meal, price, nights_count}] } | { pricingMode:'fixed', fixedPrice, fixedPriceUnit?, offers? | nights? }` → `{ pricingMode, fixedPrice, fixedPriceUnit, label, rule: {…, label} | null, rows: [{provider_price, nights_count, final_price, margin, margin_percent, margin_clamped, floor, mode}] }`.
@@ -121,7 +161,7 @@ const isArlekinoOffer = (o) => Boolean(o?.lt_extras?.totus?.custom); // НЕ п�
 - `POST /images` (multipart `image`, до 15 МБ, jpeg/png/webp) → `{ image: {source:'upload', url:'/uploads/rooms/<file>'} }`; `DELETE /images { url }`.
 - `GET /settings`, `PUT /settings { minMarginType: percent|absolute|null, minMarginValue, rounding, badge, hotelOnly }`.
 
-Ошибки: `400` валидация (`hotel_id_invalid, source_room_id_invalid, name_required, pricing_mode_invalid, fixed_price_invalid, fixed_price_out_of_range, operator_id_invalid, rule_type_invalid, rule_value_invalid, rule_value_out_of_range, min_max_invalid, min_margin_invalid, request_id_required`; `operator_required` с v2 не возвращается), `404 not_found`, `503 custom_rooms_not_migrated`, ошибки LT — как отдаёт LT (`sendLtAxiosError`).
+Ошибки: `400` валидация (`hotel_id_invalid, source_room_id_invalid, name_required, pricing_mode_invalid, fixed_price_invalid, fixed_price_out_of_range, operator_id_invalid, rule_type_invalid, rule_value_invalid, rule_value_out_of_range, min_max_invalid, min_margin_invalid, exclusive_scope_invalid, request_id_required`; `operator_required` с v2 не возвращается), `404 not_found`, `503 custom_rooms_not_migrated`, ошибки LT — как отдаёт LT (`sendLtAxiosError`).
 
 ## 5. Таблицы
 

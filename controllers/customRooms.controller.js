@@ -15,6 +15,7 @@ const { normalizeRule, ruleLabel, normalizePricing, computePrice, pricingLabel, 
 const { pickTemplateOffers, operatorIdOf, operatorNameOf } = require('../lib/customRooms/inject');
 const bookings = require('../lib/customRooms/bookings');
 
+const EXCLUSIVE_SCOPES = ['room', 'hotel'];
 const ERROR_STATUS = { not_found: 404, custom_rooms_not_migrated: 503, source_room_not_found: 404, request_id_required: 400 };
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => {
     console.error('[custom-rooms] admin error:', e);
@@ -156,11 +157,19 @@ const hotelRooms = wrap(async (req, res) => {
     }
     const grouped = [...operators.values()].map((op) => ({ ...op, rooms: [...op.rooms.values()] }));
 
+    // exclusive («продавать только наши предложения»): какие номера отеля закрыты для Level.Travel
+    const ex = store.exclusiveFromRoomTypes(rts);
+    const exclusiveRooms = new Set();
+    if (ex.wholeHotel) for (const r of rooms) { const id = Number(r.room && r.room.id); if (Number.isFinite(id)) exclusiveRooms.add(id); }
+    else for (const id of ex.rooms) exclusiveRooms.add(Number(id));
+    const exclusiveInfo = { active: ex.wholeHotel || ex.rooms.size > 0, scope: ex.wholeHotel ? 'hotel' : (ex.rooms.size ? 'room' : null), rooms: [...exclusiveRooms] };
+
     res.json({
         request_id: requestId, hotel_id: hotelId, search_type: data && data.search_type, currency: data && data.currency_code,
         operators: grouped,
-        rooms: rooms.map((r) => ({ ID: r.ID, room: r.room, min_price: r.min_price, meal_types: r.meal_types, offers: summarizeOffers(r), room_types: ours.filter((x) => x.sourceRoomId === Number(r.room && r.room.id)).map((x) => x.id) })),
+        rooms: rooms.map((r) => ({ ID: r.ID, room: r.room, min_price: r.min_price, meal_types: r.meal_types, offers: summarizeOffers(r), exclusive: exclusiveRooms.has(Number(r.room && r.room.id)), room_types: ours.filter((x) => x.sourceRoomId === Number(r.room && r.room.id)).map((x) => x.id) })),
         room_types: ours,
+        exclusive: exclusiveInfo,
         settings,
     });
 });
@@ -215,6 +224,16 @@ async function validateRoomType(body, settings, existing) {
     const operatorIdRaw = b.operatorId !== undefined ? b.operatorId : b.operator_id !== undefined ? b.operator_id : (existing ? existing.operatorId : null);
     const operatorId = operatorIdRaw === null || operatorIdRaw === '' || operatorIdRaw === undefined ? null : intParam(operatorIdRaw);
     if (operatorIdRaw !== null && operatorIdRaw !== '' && operatorIdRaw !== undefined && !operatorId) return { error: 'operator_id_invalid' };
+    // exclusive («продавать только наши предложения») — по умолчанию выключено, включает владелец вручную
+    const exclusiveRaw = b.exclusive !== undefined ? b.exclusive : b.exclusive_flag;
+    const exclusive = exclusiveRaw === undefined || exclusiveRaw === null
+        ? Boolean(existing && existing.exclusive)
+        : (exclusiveRaw === true || exclusiveRaw === 1 || exclusiveRaw === '1' || exclusiveRaw === 'true');
+    const scopeRaw = b.exclusiveScope !== undefined ? b.exclusiveScope : b.exclusive_scope;
+    const exclusiveScope = scopeRaw === undefined || scopeRaw === null || scopeRaw === ''
+        ? ((existing && existing.exclusiveScope) || 'room')
+        : String(scopeRaw);
+    if (!EXCLUSIVE_SCOPES.includes(exclusiveScope)) return { error: 'exclusive_scope_invalid' };
     // packageTypes: пустые = любой тип поиска
     const packageTypes = Array.isArray(b.packageTypes) ? b.packageTypes.filter((x) => ['hotel', 'package'].includes(x)) : (existing ? existing.packageTypes : []);
     return {
@@ -226,7 +245,7 @@ async function validateRoomType(body, settings, existing) {
             sourceSnapshot: b.sourceSnapshot && typeof b.sourceSnapshot === 'object' ? b.sourceSnapshot : (existing ? existing.sourceSnapshot : null),
             operatorIds, operatorNames, mealTypes,
             content: c.content, rule, pricing, pricingMode: pricing.mode, fixedPrice: pricing.fixedPrice, fixedPriceUnit: pricing.fixedPriceUnit, operatorName, operatorId,
-            packageTypes,
+            packageTypes, exclusive, exclusiveScope,
             badge: str(b.badge, 64) || (existing ? existing.badge : null) || settings.badge,
             active: b.active === undefined ? (existing ? existing.active : true) : b.active !== false,
             sortOrder: b.sortOrder === undefined ? (existing ? existing.sortOrder : 0) : (Number(b.sortOrder) || 0),
@@ -236,7 +255,7 @@ async function validateRoomType(body, settings, existing) {
 
 function diff(before, after) {
     const out = {};
-    const keys = ['operatorIds', 'mealTypes', 'pricingMode', 'fixedPrice', 'fixedPriceUnit', 'operatorName', 'operatorId', 'ruleType', 'ruleValue', 'rounding', 'minPrice', 'maxPrice', 'minMarginType', 'minMarginValue', 'badge', 'active', 'sortOrder', 'packageTypes'];
+    const keys = ['operatorIds', 'mealTypes', 'pricingMode', 'fixedPrice', 'fixedPriceUnit', 'operatorName', 'operatorId', 'ruleType', 'ruleValue', 'rounding', 'minPrice', 'maxPrice', 'minMarginType', 'minMarginValue', 'badge', 'active', 'sortOrder', 'packageTypes', 'exclusive', 'exclusiveScope'];
     for (const k of keys) if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) out[k] = { from: before[k], to: after[k] };
     for (const k of Object.keys(after.content || {})) if (JSON.stringify(before.content && before.content[k]) !== JSON.stringify(after.content[k])) out[`content.${k}`] = { from: before.content ? before.content[k] : null, to: after.content[k] };
     return out;
@@ -322,7 +341,8 @@ const duplicate = wrap(async (req, res) => {
         content: b.copyContent === false && src.sourceSnapshot ? { nameRu: `${src.sourceSnapshot.name_ru || src.content.nameRu} (копия)`, description: src.sourceSnapshot.description, area: src.sourceSnapshot.area, view: src.sourceSnapshot.view, facilities: src.sourceSnapshot.facilities, images: b.images === 'none' ? [] : (src.sourceSnapshot.images || []).map((im) => ({ source: 'lt', url: im.x900 || im.x900x380 || im })) }
             : { ...src.content, nameRu: str(b.name, 255) || `${src.content.nameRu} (копия)`, images: b.images === 'none' ? [] : src.content.images },
         rule: b.copyRule === false ? { ruleType: 'percent', ruleValue: 0 } : (src.ruleType ? { ruleType: src.ruleType, ruleValue: src.ruleValue, rounding: src.rounding, minPrice: src.minPrice, maxPrice: src.maxPrice, minMarginType: src.minMarginType, minMarginValue: src.minMarginValue } : undefined),
-        packageTypes: src.packageTypes, badge: src.badge, active: false, sortOrder: src.sortOrder + 1,
+        packageTypes: src.packageTypes, exclusive: src.exclusive, exclusiveScope: src.exclusiveScope,
+        badge: src.badge, active: false, sortOrder: src.sortOrder + 1,
     };
     if (str(b.name, 255)) body.content.nameRu = str(b.name, 255);
     const v = await validateRoomType(body, settings, null);
