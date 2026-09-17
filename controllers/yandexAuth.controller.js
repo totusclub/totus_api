@@ -89,7 +89,7 @@ exports.callback = async (req, res) => {
         const ticket = yandex.createTicket({ userId: user.id, isNew });
         return res.redirect(302, yandex.returnUrl(client, { ticket, return: returnPath }));
     } catch (err) {
-        const known = ['yandex_email_required', 'user_blocked'];
+        const known = ['yandex_email_required'];
         const code = known.includes(err.message) ? err.message : 'yandex_failed';
         if (!known.includes(err.message)) {
             // Статус от Яндекса помогает отличить неверный secret (400/401) от чужого redirect_uri.
@@ -115,7 +115,6 @@ exports.exchange = async (req, res) => {
         const [rows] = await db.query('SELECT * FROM users WHERE id = ? LIMIT 1', [value.userId]);
         const user = rows[0];
         if (!user) return res.status(401).json({ error: 'unauthorized' });
-        if (Number(user.access) === 1) return res.status(403).json({ error: 'forbidden' });
 
         res.json({
             ...issueUserTokens(user),
