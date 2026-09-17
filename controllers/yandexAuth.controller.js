@@ -3,7 +3,7 @@
 /**
  * Вход через Яндекс ID — контроллер (план claude/YANDEX_AUTH_PLAN_RU.md, §5).
  *
- *   GET  /api/auth/yandex/start     → 302 на oauth.yandex.ru
+ *   GET  /api/auth/yandex/start     → 302 на oauth.yandex.ru (?force=1 — снова показать экран прав)
  *   GET  /api/auth/yandex/callback  → обмен кода на сервере, 302 с одноразовым ticket
  *   POST /api/auth/yandex/exchange  → { ticket } → наши JWT (как /api/auth/verify)
  *   POST /api/auth/yandex/link      → привязать Яндекс к открытой сессии (strict JWT)
@@ -29,6 +29,11 @@ function warnOnce(reason, message) {
     console.warn(message);
 }
 
+/** Флаг из query: ?force=1 / yes / true. */
+function isTruthy(value) {
+    return ['1', 'yes', 'true'].includes(String(value || '').trim().toLowerCase());
+}
+
 /**
  * Раздел выключен — в ответе говорим почему:
  *   reason: 'env'    — процесс не видит переменных (имена — в missing, значений нет)
@@ -49,14 +54,15 @@ async function ensureEnabled(res) {
     return true;
 }
 
-// GET /api/auth/yandex/start?client=web|app|desktop&return=/lk
+// GET /api/auth/yandex/start?client=web|app|desktop&return=/lk&force=1
 exports.start = async (req, res) => {
     if (!(await ensureEnabled(res))) return;
     try {
         const client = yandex.normalizeClient(req.query.client);
         const returnPath = yandex.safeReturnPath(req.query.return);
         const state = yandex.signState({ client, returnPath });
-        res.redirect(302, yandex.authorizeUrl(state));
+        // force=1 — повтор после «почта не выдана»: Яндекс снова покажет экран прав.
+        res.redirect(302, yandex.authorizeUrl(state, { forceConfirm: isTruthy(req.query.force) }));
     } catch (err) {
         console.error('[YANDEX-AUTH] start failed:', err.message);
         res.status(500).json({ error: 'yandex_start_failed' });
@@ -83,8 +89,15 @@ exports.callback = async (req, res) => {
     if (!req.query.code) return fail('yandex_code_missing');
 
     try {
-        const accessToken = await yandex.exchangeCodeForToken(req.query.code);
+        const { accessToken, scope } = await yandex.exchangeCodeForToken(req.query.code);
         const profile = await yandex.fetchProfile(accessToken);
+
+        if (!profile.email) {
+            // Видно, что именно выдал Яндекс: есть ли в scope login:email.
+            console.warn(`[YANDEX-AUTH] почта не выдана, scope="${scope}" — клиент предложит повтор с force_confirm`);
+            return fail('yandex_email_required');
+        }
+
         const { user, isNew } = await yandex.resolveUser(profile);
         const ticket = yandex.createTicket({ userId: user.id, isNew });
         return res.redirect(302, yandex.returnUrl(client, { ticket, return: returnPath }));
