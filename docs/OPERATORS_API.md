@@ -11,15 +11,20 @@
 `operator_id` вычислялся как `990000 + id Room Type` — то есть каждый Room Type формально был
 отдельным оператором, и фильтр «Туроператор» на витрине схлопывал их костылём «id ≥ 990000».
 
-Теперь оператор — отдельная запись. Room Type ссылается на неё колонкой
-`custom_room_types.operator_ref_id`; имя и `operator_id` для витрины берутся из справочника,
-а старые колонки остаются снимком (их пишет backend, руками менять не нужно).
+Теперь оператор — отдельная запись. Связь с Room Type идёт по **уже существующей** колонке
+`custom_room_types.operator_id`: там лежит `operator_id` оператора из справочника, а
+`custom_room_types.operator_name` — его имя. Новых колонок нет, `store.js` и `inject.js` не
+менялись — витрина и так показывает то, что записано в строке Room Type.
+
+Чтобы имя не разъезжалось со справочником, `PUT /api/admin/operators/:id` переписывает имя
+(и `operator_id`, если его поменяли) во всех Room Type этого оператора. Переименование в
+админке сразу меняет подпись предложения на витрине; в ответе приходит `roomTypesUpdated`.
 
 ## Таблица `custom_room_operators`
 
 | колонка | тип | смысл |
 |---|---|---|
-| `id` | INT AI PK | внутренний id, на него ссылается `custom_room_types.operator_ref_id` |
+| `id` | INT AI PK | внутренний id записи справочника |
 | `operator_id` | INT NOT NULL UNIQUE | id на витрине, только ≥ 990000 |
 | `name` | VARCHAR(128) NOT NULL | название на витрине |
 | `active` | TINYINT(1) DEFAULT 1 | выключенный не показывается |
@@ -37,8 +42,8 @@
 Пока `scripts/run-operators-migration.js` не прогнан, таблицы нет:
 `operators.isAvailable()` возвращает `false`, `GET /api/admin/operators` отвечает
 `{ operators: [], available: false }` со статусом 200, а весь модуль custom rooms работает
-ровно как раньше — имя из `custom_room_types.operator_name`, `operator_id = 990000 + id`.
-Ничего не выключается (в отличие от обязательных колонок в `lib/customRooms/store.js`).
+ровно как раньше — имя из `custom_room_types.operator_name`, `operator_id` пустой и витрине
+отдаётся вычисляемый `990000 + id Room Type`. Ничего не выключается.
 
 ## Эндпоинты
 
@@ -47,7 +52,7 @@
 | GET | `/api/admin/operators` | `{ operators, available, suggestedOperatorId, operatorIdBase }` |
 | POST | `/api/admin/operators` | `{ name, operatorId?, sortOrder?, active?, emailFromName?, notifyEmails? }` → `{ ok, operator }` |
 | GET | `/api/admin/operators/:id` | `{ operator }` |
-| PUT | `/api/admin/operators/:id` | те же поля, все необязательные → `{ ok, operator }` |
+| PUT | `/api/admin/operators/:id` | те же поля, все необязательные → `{ ok, operator, roomTypesUpdated }` |
 | POST | `/api/admin/operators/:id/toggle` | `{ active? }` (без тела — переключает) → `{ ok, operator }` |
 | POST | `/api/admin/operators/:id/duplicate` | `{ name?, operatorId?, copyEmails?, active? }` → `{ ok, operator }` |
 | DELETE | `/api/admin/operators/:id` | `{ ok }` |
@@ -58,7 +63,8 @@
 копия создаётся пустой. По умолчанию копия выключена (`active: false`) и настройки почты
 копируются (`copyEmails: true`).
 
-`DELETE` запрещён, пока на оператора ссылается хотя бы один Room Type.
+`DELETE` запрещён, пока за оператором закреплён хотя бы один Room Type
+(`custom_room_types.operator_id = <operator_id>`).
 
 ## Коды ошибок
 
@@ -71,24 +77,25 @@
 | `operator_id_taken` | 409 | такой `operator_id` уже занят |
 | `operator_sort_order_invalid` | 400 | порядок не целый или отрицательный |
 | `operator_emails_invalid` | 400 | адреса уведомлений не похожи на e-mail или длиннее 512 символов |
-| `operator_in_use` | 409 | на оператора ссылаются Room Type (в ответе `roomTypesCount`) |
+| `operator_in_use` | 409 | за оператором закреплены Room Type (в ответе `roomTypesCount`) |
 
 ## Room Type
 
-`POST/PUT /api/admin/rooms/room-types` принимают `operatorRefId`:
+Ничего нового в контракте `/api/admin/rooms/room-types` не появилось: оператор выбирается
+теми же полями, что и раньше —
 
-- число — привязать Room Type к оператору; `operatorName` и `operatorId` перезаписываются
-  снимком из справочника, что бы ни прислала админка;
-- `null` — отвязать (вернуться к свободной строке `operatorName`);
-- поле не передано при создании — берётся первый активный оператор по порядку;
-- поле не передано при редактировании — привязка сохраняется;
-- несуществующий id — `operator_ref_invalid` (400).
+- `operatorId` — `operator_id` выбранного оператора (990000+);
+- `operatorName` — его название.
 
-В ответе Room Type добавились `operatorRefId`, `operatorRefName`, `operatorRefActive`.
-Смена оператора попадает в историю правок (`operatorRefId` в change-log).
+Админка берёт обе величины из справочника (выпадающий список), поэтому строка Room Type
+всегда содержит корректный снимок. Смена оператора попадает в историю правок как
+`operatorId` / `operatorName` — это уже поддержано.
+
+Room Type, у которого `operatorId` пуст, остаётся на прежнем поведении: витрине отдаётся
+`990000 + id Room Type`, то есть такой Room Type выглядит отдельным оператором.
 
 ## Проверки
 
 `node scripts/check-operators.js` (или `npm run check`) — без БД и сети: валидация оператора,
-подстановка оператора в Room Type, привязка в админской валидации и то, что без миграции
-поведение прежнее.
+связь с Room Type по `operator_id`, перенос имени в Room Type при переименовании и то, что
+без миграции справочник просто пуст.
