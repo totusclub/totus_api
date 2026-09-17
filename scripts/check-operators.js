@@ -1,58 +1,49 @@
 // Справочник операторов (claude/OPERATORS_PLAN_RU.md):
 //   NODE_PATH=/home/claude/stubs/node_modules node scripts/check-operators.js
-// Без БД и сети (db.query подменён). Проверяем: валидацию оператора (имя, пул id 990000+, уникальность,
-// порядок, адреса почты), подстановку оператора в Room Type при сериализации, привязку operator_ref_id
-// в админской валидации Room Type и то, что без справочника поведение ровно прежнее.
+// Без БД и сети (db.query подменён). Проверяем: валидацию оператора (имя, пул id 990000+,
+// уникальность, порядок, адреса почты), связь с Room Type по custom_room_types.operator_id,
+// перенос имени в Room Type при переименовании оператора и то, что без миграции справочник
+// просто пуст и ничего не ломает.
 'use strict';
 const assert = require('assert');
 process.env.DB_HOST = process.env.DB_HOST || 'localhost';
-process.env.JWT_SECRET = process.env.JWT_SECRET || 's1';
-
-// Level.Travel в проверках не вызывается: если utils/levelTravelHttp недоступен — заглушка
-{
-    const Module = require('module');
-    const origLoad = Module._load;
-    Module._load = function (request, ...rest) {
-        if (/utils\/levelTravelHttp$/.test(String(request))) {
-            try { return origLoad.call(this, request, ...rest); } catch (e) { return { ltRequest: async () => { throw new Error('LT disabled in checks'); }, logLtError() {}, sendLtAxiosError: (res) => res.status(502).json({ error: 'lt_disabled' }) }; }
-        }
-        return origLoad.call(this, request, ...rest);
-    };
-}
 
 // --- заглушка БД -------------------------------------------------------------
 const state = {
     hasTable: true,
+    taken: new Set(),
     rows: [
         { id: 1, operator_id: 990000, name: 'Arlekino', active: 1, sort_order: 0, email_from_name: 'Arlekino Tour', notify_emails: 'booking@arlekino.ru', created_by: 'migration', created_at: null, updated_at: null },
         { id: 2, operator_id: 990001, name: 'Sunrise Travel', active: 0, sort_order: 1, email_from_name: null, notify_emails: null, created_by: 'Ирина', created_at: null, updated_at: null },
     ],
-    roomTypesByOperator: { 1: 12, 2: 0 },
 };
+const calls = [];
 const dbMod = require('../db');
-dbMod.query = (sql) => {
+dbMod.query = (sql, args) => {
     const q = String(sql).replace(/\s+/g, ' ').trim();
-    if (/FROM custom_room_operators/.test(q) && !state.hasTable) return Promise.reject(new Error("Table 'custom_room_operators' doesn't exist"));
+    calls.push({ q, args });
+    if (/custom_room_operators/.test(q) && !state.hasTable) return Promise.reject(new Error("Table 'custom_room_operators' doesn't exist"));
     if (/^SELECT 1 FROM custom_room_operators/.test(q)) return Promise.resolve([[{ 1: 1 }]]);
     if (/SELECT MAX\(operator_id\)/.test(q)) return Promise.resolve([[{ m: Math.max(0, ...state.rows.map((r) => r.operator_id)) }]]);
-    if (/^SELECT id FROM custom_room_operators WHERE operator_id = \?/.test(q)) return Promise.resolve([[]]);   // занятость задаём отдельно
-    if (/COUNT\(\*\) AS c FROM custom_room_types WHERE operator_ref_id/.test(q)) return Promise.resolve([[{ c: 0 }]]);
-    if (/^SELECT o\.\*/.test(q) && /WHERE o\.id = \?/.test(q)) return Promise.resolve([[state.rows[0]]]);
-    if (/^SELECT o\.\*/.test(q)) return Promise.resolve([state.rows.map((r) => ({ ...r, room_types_count: state.roomTypesByOperator[r.id] || 0, active_room_types_count: 0 }))]);
+    if (/^SELECT id FROM custom_room_operators WHERE operator_id = \?/.test(q)) {
+        return Promise.resolve([state.taken.has(Number(args[0])) ? [{ id: 99 }] : []]);
+    }
+    if (/COUNT\(\*\) AS c FROM custom_room_types WHERE operator_id/.test(q)) return Promise.resolve([[{ c: Number(args[0]) === 990000 ? 12 : 0 }]]);
+    if (/^SELECT o\.\*/.test(q) && /WHERE o\.id = \?/.test(q)) {
+        const row = state.rows.find((r) => r.id === Number(args[0]));
+        return Promise.resolve([row ? [{ ...row, room_types_count: 0, active_room_types_count: 0 }] : []]);
+    }
+    if (/^SELECT o\.\*/.test(q)) return Promise.resolve([state.rows.map((r) => ({ ...r, room_types_count: 0, active_room_types_count: 0 }))]);
     if (/^SELECT \* FROM custom_room_operators/.test(q)) return Promise.resolve([state.rows]);
-    if (/SHOW COLUMNS FROM custom_room_types/.test(q)) return Promise.resolve([[{ Field: 'operator_ref_id' }]]);
-    return Promise.resolve([[]]);
+    if (/^UPDATE custom_room_types SET operator_id = \?, operator_name = \?/.test(q)) return Promise.resolve([{ affectedRows: 12 }]);
+    return Promise.resolve([{ affectedRows: 0, insertId: 3 }]);
 };
 
 const operators = require('../lib/customRooms/operators');
-const store = require('../lib/customRooms/store');
-const ctrl = require('../controllers/customRooms.controller');
 
-const reset = () => { operators.invalidate(); };
-
-// --- 1. Валидация оператора --------------------------------------------------
 (async () => {
-    reset();
+    // --- 1. Валидация оператора ----------------------------------------------
+    operators.invalidate();
     let v = await operators.validate({ name: '' }, null);
     assert.strictEqual(v.error, 'operator_name_required', 'без имени — ошибка');
 
@@ -66,11 +57,16 @@ const reset = () => { operators.invalidate(); };
     v = await operators.validate({ name: 'Новый', operatorId: 78 }, null);
     assert.strictEqual(v.error, 'operator_id_invalid', 'id ниже 990000 запрещён — это диапазон Level.Travel');
 
+    v = await operators.validate({ name: 'Новый', operatorId: 990500.5 }, null);
+    assert.strictEqual(v.error, 'operator_id_invalid', 'дробный id запрещён');
+
     v = await operators.validate({ name: 'Новый', operatorId: 990500 }, null);
     assert.strictEqual(v.value.operatorId, 990500, 'свой id из пула принимается');
 
-    v = await operators.validate({ name: 'Новый', operatorId: 990500.5 }, null);
-    assert.strictEqual(v.error, 'operator_id_invalid', 'дробный id запрещён');
+    state.taken.add(990500);
+    v = await operators.validate({ name: 'Новый', operatorId: 990500 }, null);
+    assert.strictEqual(v.error, 'operator_id_taken', 'занятый id отклоняется');
+    state.taken.clear();
 
     v = await operators.validate({ name: 'Новый', sortOrder: -1 }, null);
     assert.strictEqual(v.error, 'operator_sort_order_invalid');
@@ -97,73 +93,45 @@ const reset = () => { operators.invalidate(); };
 
     console.log('✅ валидация оператора');
 
-    // --- 2. Подстановка оператора в Room Type --------------------------------
-    const row = {
-        id: 7, hotel_id: 123, source_room_id: 501, operator_ids: '[]', operator_names: '[]', meal_types: null,
-        name_ru: 'Deluxe', rule_type: null, rule_value: null, rounding: 1, pricing_mode: 'fixed', fixed_price: '86850.00',
-        fixed_price_unit: 'total', operator_name: 'Arlekino', operator_id: null, package_types: '[]', badge: 'Totus',
-        active: 1, sort_order: 0, facilities: '[]', images: '[]',
-    };
-    const opMap = await operators.mapById();
-    assert.strictEqual(opMap.size, 2, 'справочник прочитан');
+    // --- 2. Связь с Room Type по operator_id ---------------------------------
+    operators.invalidate();
+    const byOperatorId = await operators.mapByOperatorId();
+    assert.strictEqual(byOperatorId.size, 2, 'справочник прочитан');
+    assert.strictEqual(byOperatorId.get(990000).name, 'Arlekino');
+    assert.strictEqual(byOperatorId.get(990001).active, false, 'состояние оператора видно в админке');
 
-    const noCatalog = store.serializeRoomType({ ...row }, store.DEFAULT_SETTINGS);
-    assert.strictEqual(noCatalog.operatorName, 'Arlekino', 'без справочника — имя из строки');
-    assert.strictEqual(noCatalog.operatorId, null);
-    assert.strictEqual(noCatalog.effectiveOperatorId, 990007, 'без справочника — синтетический id 990000 + id Room Type');
-    assert.strictEqual(noCatalog.operatorRefId, null);
+    assert.strictEqual(await operators.roomTypesCount(990000), 12, 'счёт Room Type идёт по custom_room_types.operator_id');
+    assert.strictEqual(await operators.roomTypesCount(990001), 0);
 
-    const linked = store.serializeRoomType({ ...row, operator_ref_id: 2 }, store.DEFAULT_SETTINGS, opMap);
-    assert.strictEqual(linked.operatorName, 'Sunrise Travel', 'имя берётся из справочника');
-    assert.strictEqual(linked.operatorId, 990001, 'operator_id берётся из справочника');
-    assert.strictEqual(linked.effectiveOperatorId, 990001, 'синтетический id больше не используется');
-    assert.strictEqual(linked.operatorRefId, 2);
-    assert.strictEqual(linked.operatorRefActive, false, 'состояние оператора видно в админке');
+    console.log('✅ связь Room Type с оператором по operator_id');
 
-    // привязка есть, но оператор удалён из справочника — откат к прежнему поведению, ничего не падает
-    const broken = store.serializeRoomType({ ...row, operator_ref_id: 404 }, store.DEFAULT_SETTINGS, opMap);
-    assert.strictEqual(broken.operatorName, 'Arlekino');
-    assert.strictEqual(broken.effectiveOperatorId, 990007);
+    // --- 3. Переименование переносится в Room Type ----------------------------
+    calls.length = 0;
+    const affected = await operators.update(1, { operatorId: 990000, name: 'Arlekino Travel', active: true, sortOrder: 0, emailFromName: null, notifyEmails: null }, existing);
+    assert.strictEqual(affected, 12, 'Room Type оператора обновлены');
+    const propagate = calls.find((c) => /^UPDATE custom_room_types SET operator_id = \?, operator_name = \?/.test(c.q.replace(/\s+/g, ' ').trim()));
+    assert.ok(propagate, 'имя переносится в custom_room_types');
+    assert.deepStrictEqual(propagate.args, [990000, 'Arlekino Travel', 990000], 'обновляются строки прежнего operator_id');
 
-    console.log('✅ подстановка оператора в Room Type');
+    // смена самого operator_id: строки переезжают со старого id на новый
+    calls.length = 0;
+    await operators.update(1, { operatorId: 990009, name: 'Arlekino Travel', active: true, sortOrder: 0, emailFromName: null, notifyEmails: null }, existing);
+    const moved = calls.find((c) => /^UPDATE custom_room_types SET operator_id/.test(c.q.replace(/\s+/g, ' ').trim()));
+    assert.deepStrictEqual(moved.args, [990009, 'Arlekino Travel', 990000], 'старый id → новый');
 
-    // --- 3. Админская валидация Room Type ------------------------------------
-    const settings = { ...store.DEFAULT_SETTINGS };
-    const base = { hotelId: 123, sourceRoomId: 501, content: { nameRu: 'Deluxe' }, pricingMode: 'fixed', fixedPrice: 1 };
+    console.log('✅ переименование оператора доходит до Room Type');
 
-    let r = await ctrl._internal.validateRoomType({ ...base }, settings, null);
-    assert.ok(!r.error, r.error);
-    assert.strictEqual(r.value.operatorRefId, 1, 'новый Room Type без выбора — первый активный оператор');
-    assert.strictEqual(r.value.operatorName, 'Arlekino', 'имя — снимок справочника');
-    assert.strictEqual(r.value.operatorId, 990000, 'operator_id — снимок справочника');
-
-    r = await ctrl._internal.validateRoomType({ ...base, operatorRefId: 2 }, settings, null);
-    assert.strictEqual(r.value.operatorRefId, 2, 'выбранный оператор сохраняется');
-    assert.strictEqual(r.value.operatorName, 'Arlekino', 'get() в заглушке всегда отдаёт первого — имя из справочника');
-
-    r = await ctrl._internal.validateRoomType({ ...base, operatorRefId: 'нет' }, settings, null);
-    assert.strictEqual(r.error, 'operator_ref_invalid', 'мусор в operator_ref_id — ошибка');
-
-    r = await ctrl._internal.validateRoomType({ ...base, operatorRefId: null }, settings, null);
-    assert.strictEqual(r.value.operatorRefId, null, 'явный null отвязывает Room Type от справочника');
-
-    assert.ok(ctrl._internal.diff({ operatorRefId: 1 }, { operatorRefId: 2 }).operatorRefId, 'смена оператора попадает в историю правок');
-
-    console.log('✅ выбор оператора при создании и редактировании Room Type');
-
-    // --- 4. Без миграции — поведение прежнее ---------------------------------
+    // --- 4. Без миграции — справочник пуст, ничего не ломается ----------------
     state.hasTable = false;
-    reset();
-    operators.isAvailable(true);
-    await new Promise((res) => setImmediate(res));
+    operators.invalidate();
     assert.strictEqual(await operators.isAvailable(true), false, 'без таблицы справочник недоступен');
     assert.deepStrictEqual(await operators.list(), [], 'список пуст');
-    r = await ctrl._internal.validateRoomType({ ...base }, settings, null);
-    assert.strictEqual(r.value.operatorRefId, null, 'без справочника привязки нет');
-    assert.strictEqual(r.value.operatorName, 'Arlekino', 'без справочника — прежнее имя по умолчанию');
+    assert.strictEqual((await operators.mapByOperatorId()).size, 0);
+    assert.strictEqual(await operators.get(1), null);
+    assert.strictEqual(await operators.nextOperatorId(), operators.OPERATOR_ID_BASE, 'первый id — 990000');
     state.hasTable = true;
-    reset();
+    operators.invalidate();
 
-    console.log('✅ без миграции поведение не меняется');
+    console.log('✅ без миграции справочник просто пуст');
     console.log('ALL OPERATORS CHECKS PASSED');
 })().catch((e) => { console.error('❌', e.message); process.exit(1); });
