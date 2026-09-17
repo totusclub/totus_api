@@ -14,6 +14,13 @@
  * client/orders/:id/sync, level_travel/notify-paid, payment/status, v3: GET /orders?order_id=<внутренний>
  * (снимок из БД). LT для них не вызывается нигде. Для обычных (LT) заказов middleware ничего не подменяет:
  * beforePackageDetails для не-виртуального tour_id → null, afterOrders дополняет totus_booking только внутренним.
+ *
+ * Тип поиска (решение владельца 17.09.2026): наши предложения («Arlekino») попадают в /hotels-rooms
+ * ТОЛЬКО при поиске отелей (search_type = hotel) — см. showsCustomOffers. В пакетном поиске (тур с
+ * перелётом) и когда тип определить не удалось, ответ Level.Travel уходит клиенту без изменений:
+ * injectRooms не вызывается вовсе, значит нет ни наших offers, ни exclusive, ни пересчёта минимумов.
+ * Правило одно для всех клиентов (сайт, приложение, desktop) — фронтенды сами ничего не добавляют,
+ * они лишь группируют предложения по метке offer.lt_extras.totus.custom.
  */
 
 const store = require('../lib/customRooms/store');
@@ -25,6 +32,13 @@ const internal = require('../lib/customRooms/internalOrders');
 // Коды search_type в теле ответа LT /search/hotel_rooms (снято с прода 15.09.2026): 0 — package (с перелётом), 1 — hotel (без перелёта).
 // Используются только если request_id не сохранён через /start-search (поиск начат ассистентом, запись устарела).
 const SEARCH_TYPE_HOTEL_CODES = String(process.env.CUSTOM_ROOMS_HOTEL_SEARCH_TYPE_CODES || '1').split(',').map((s) => s.trim());
+
+/**
+ * Показываем ли наши предложения при таком типе поиска. Только `hotel`; `package` и неизвестный тип
+ * (null — записи поиска нет и в теле LT нет search_type) — нет (fail-closed: лучше не показать своё
+ * предложение, чем показать его в пакетном поиске).
+ */
+function showsCustomOffers(searchType) { return searchType === 'hotel'; }
 
 function wrapJson(res, transform) {
     const orig = res.json.bind(res);
@@ -77,6 +91,11 @@ async function handle(req, res, next) {
                 searchType = SEARCH_TYPE_HOTEL_CODES.includes(String(body.search_type)) ? 'hotel' : 'package';
             }
             diag.bump('hotelsRoomsSeen', { lastHotelsRoomsAt: new Date().toISOString(), lastHotelsRoomsHotelId: String(hotelId), lastHotelsRoomsSearchType: searchType || null });
+            // Только поиск отелей: иначе отдаём тело Level.Travel как есть, не заходя в injectRooms.
+            if (!showsCustomOffers(searchType)) {
+                diag.log(`hotel ${hotelId}: custom offers skipped — search_type ${searchType || 'unknown'} (показываем только при hotel)`);
+                return body;
+            }
             try {
                 return await injectRooms(body, { requestId, hotelId, searchType });
             } catch (e) {
@@ -190,3 +209,4 @@ if (cleanupTimer.unref) cleanupTimer.unref();
 module.exports = customRoomsMiddleware;
 module.exports.WATCHED = WATCHED;
 module.exports.wrapJson = wrapJson;
+module.exports.showsCustomOffers = showsCustomOffers;
