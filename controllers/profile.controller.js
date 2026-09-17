@@ -6,21 +6,29 @@
  * Появился для шага «Почти готово» после входа через Яндекс ID: у нового
  * пользователя телефона нет (Яндекс его не отдаёт — право login:default_phone
  * мы не запрашиваем), поэтому он вводит его сам. Шаг не блокирующий.
+ *
+ * Принимаем только российские номера (+7 / 8) — решение владельца; см. lib/phone.js.
  */
 
 const db = require('../db');
 const auth = require('../lib/auth');
+const { normalizeRuPhone } = require('../lib/phone');
 
 // PATCH /api/auth/me/phone  { phone }  — strict JWT (user)
 exports.updatePhone = async (req, res) => {
-    const phone = String(req.body?.phone ?? '').trim();
-    if (!phone) return res.status(400).json({ error: 'phone_required' });
+    const raw = String(req.body?.phone ?? '').trim();
+    if (!raw) return res.status(400).json({ error: 'phone_required' });
 
-    const digits = phone.replace(/\D/g, '');
-    if (digits.length < 10 || digits.length > 15) return res.status(400).json({ error: 'phone_invalid' });
+    const phone = normalizeRuPhone(raw);
+    if (!phone) {
+        return res.status(400).json({
+            error: 'phone_invalid',
+            message: 'Введите российский номер: +7 или 8, 11 цифр',
+        });
+    }
 
     try {
-        await db.query('UPDATE users SET phone = ? WHERE id = ?', [phone.slice(0, 32), req.auth.id]);
+        await db.query('UPDATE users SET phone = ? WHERE id = ?', [phone, req.auth.id]);
         const [rows] = await db.query('SELECT * FROM users WHERE id = ? LIMIT 1', [req.auth.id]);
         const user = rows[0];
         if (!user) return res.status(404).json({ message: 'User not found' });
