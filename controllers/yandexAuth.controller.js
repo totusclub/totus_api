@@ -20,13 +20,30 @@ function issueUserTokens(userRow) {
     return { auth: true, authToken: accessToken, accessToken, refreshToken };
 }
 
+// Лог о выключенном разделе — не чаще раза в минуту на причину, чтобы не заливать pm2-логи.
+const lastWarnAt = new Map();
+function warnOnce(reason, message) {
+    const now = Date.now();
+    if (now - (lastWarnAt.get(reason) || 0) < 60 * 1000) return;
+    lastWarnAt.set(reason, now);
+    console.warn(message);
+}
+
+/**
+ * Раздел выключен — в ответе говорим почему:
+ *   reason: 'env'    — процесс не видит переменных (имена — в missing, значений нет)
+ *   reason: 'schema' — не прогнана миграция (нет таблицы user_identities)
+ */
 async function ensureEnabled(res) {
     if (!yandex.isConfigured()) {
-        res.status(503).json({ error: 'yandex_auth_not_configured' });
+        const missing = yandex.missingConfig();
+        warnOnce('env', `[YANDEX-AUTH] 503 reason=env — процесс не видит переменных: ${missing.join(', ')} (проверьте .env и .env.local в каталоге запуска, затем pm2 restart api --update-env)`);
+        res.status(503).json({ error: 'yandex_auth_not_configured', reason: 'env', missing });
         return false;
     }
     if (!(await yandex.hasSchema())) {
-        res.status(503).json({ error: 'yandex_auth_not_configured' });
+        warnOnce('schema', '[YANDEX-AUTH] 503 reason=schema — нет таблицы user_identities: npm run migrate:yandex-auth, затем pm2 restart api');
+        res.status(503).json({ error: 'yandex_auth_not_configured', reason: 'schema' });
         return false;
     }
     return true;
@@ -72,9 +89,14 @@ exports.callback = async (req, res) => {
         const ticket = yandex.createTicket({ userId: user.id, isNew });
         return res.redirect(302, yandex.returnUrl(client, { ticket, return: returnPath }));
     } catch (err) {
-        const known = ['yandex_email_required', 'user_blocked'];
+        const known = ['yandex_email_required'];
         const code = known.includes(err.message) ? err.message : 'yandex_failed';
-        if (!known.includes(err.message)) console.error('[YANDEX-AUTH] callback failed:', err.message);
+        if (!known.includes(err.message)) {
+            // Статус от Яндекса помогает отличить неверный secret (400/401) от чужого redirect_uri.
+            const status = err.response && err.response.status;
+            const detail = err.response && err.response.data ? JSON.stringify(err.response.data).slice(0, 200) : '';
+            console.error('[YANDEX-AUTH] callback failed:', err.message, status ? `status=${status}` : '', detail);
+        }
         return fail(code);
     }
 };
@@ -93,7 +115,6 @@ exports.exchange = async (req, res) => {
         const [rows] = await db.query('SELECT * FROM users WHERE id = ? LIMIT 1', [value.userId]);
         const user = rows[0];
         if (!user) return res.status(401).json({ error: 'unauthorized' });
-        if (Number(user.access) === 1) return res.status(403).json({ error: 'forbidden' });
 
         res.json({
             ...issueUserTokens(user),
