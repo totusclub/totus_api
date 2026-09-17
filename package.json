@@ -5,7 +5,7 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js",
+    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js && node scripts/check-phone.js",
     "migrate:custom-rooms": "node scripts/run-custom-rooms-migration.js",
     "migrate:operators": "node scripts/run-operators-migration.js",
     "migrate:yandex-auth": "node scripts/run-yandex-auth-migration.js",
