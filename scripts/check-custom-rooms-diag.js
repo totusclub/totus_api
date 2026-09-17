@@ -158,9 +158,9 @@ async function diagChecks() {
     await new Promise((resolve) => mw({ method: 'GET', path: '/hotels-rooms', query: { request_id: 'r', hotel_id: '1' } }, {}, resolve));
     store.isReady = okReady;
     assert.strictEqual(diag.stats.watchedCalls, before.watchedCalls + 1); assert.strictEqual(diag.stats.notReadySkips, before.notReadySkips + 1);
-    // /hotels-rooms через wrapJson: счётчик и hotel_id/search_type последнего запроса
+    // /hotels-rooms через wrapJson: счётчик и hotel_id/search_type последнего запроса (наши предложения — только при hotel)
     store.isReady = async () => true;
-    store.getSearch = async () => ({ requestId: 'r', searchType: 'package', params: {} });
+    store.getSearch = async () => ({ requestId: 'r', searchType: 'hotel', params: {} });
     stub.rts = [fixedRt()]; stub.checked = [];
     const sent = [];
     const res = { statusCode: 200, json: (b) => { sent.push(b); return res; } };
@@ -169,7 +169,7 @@ async function diagChecks() {
     await new Promise((r) => setTimeout(r, 20));
     store.isReady = okReady;
     assert.strictEqual(sent.length, 1); assert.strictEqual(sent[0].result.length, 1, 'ответ сайту: один номер'); assert.ok(inject.isArlekinoOffer(sent[0].result[0].offers.AI[0]), 'с нашим предложением внутри');
-    assert.strictEqual(diag.stats.lastHotelsRoomsHotelId, '123'); assert.strictEqual(diag.stats.lastHotelsRoomsSearchType, 'package'); assert.ok(diag.stats.lastInjectAt);
+    assert.strictEqual(diag.stats.lastHotelsRoomsHotelId, '123'); assert.strictEqual(diag.stats.lastHotelsRoomsSearchType, 'hotel'); assert.ok(diag.stats.lastInjectAt);
 
     // GET /diagnostics: DISABLED → подсказка про миграцию; ready → подсказки по каждой Room Type
     const call = async (query) => { let out; await ctrl.diagnostics({ query: query || {} }, { json: (b) => { out = b; }, status() { return this; } }); return out; };

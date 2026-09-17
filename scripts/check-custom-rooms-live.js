@@ -125,7 +125,7 @@ async function checks() {
     assert.strictEqual(stub.checked.length, 0, 'причины пропуска нет');
     assert.strictEqual(stub.seen[0].providerPrice, 258996);
 
-    // 2. searchType не определён (request_id не в custom_room_searches) — вставляется всᑑ равно; и при hotel
+    // 2. searchType не определён (request_id не в custom_room_searches) — вставляется всё равно; и при hotel
     reset(); stub.rts = [rtFixed()];
     out = await inject.injectRooms(ltBody(), ctx(null));
     assert.strictEqual(arlekino(SOURCE(out)).length, 1, 'searchType null → без ограничений');
