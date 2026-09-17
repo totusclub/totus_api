@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const profileController = require('../controllers/profile.controller');
 const { requireAuth } = require('../lib/auth');
 const { authLimiter } = require('../lib/security');
 
@@ -11,6 +12,8 @@ router.post('/generation-loyalty', authController.generationLoyalty);
 
 // Волна 1 (SECURITY_JWT_PLAN_RU.md): профиль по токену, refresh, вход агента.
 router.get('/me', requireAuth(['user', 'agent'], { strict: true }), authController.me);
+// Телефон профиля — шаг «Почти готово» после входа через Яндекс ID.
+router.patch('/me/phone', authLimiter, requireAuth(['user'], { strict: true }), profileController.updatePhone);
 router.post('/refresh', authLimiter, authController.refresh);
 router.post('/agent/sign-in', authLimiter, authController.agentSignIn);
 
