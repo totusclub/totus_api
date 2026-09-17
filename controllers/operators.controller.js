@@ -3,7 +3,7 @@
 /**
  * Справочник операторов — /api/admin/operators/* (staff-JWT strict). docs/OPERATORS_API.md.
  * Данные — lib/customRooms/operators.js (таблица custom_room_operators).
- * Room Type ссылается на оператора через operator_ref_id; имя и operator_id витрины берутся отсюда.
+ * Связь с Room Type — по custom_room_types.operator_id.
  */
 
 const operators = require('../lib/customRooms/operators');
@@ -65,14 +65,15 @@ const create = wrap(async (req, res) => {
     res.json({ ok: true, operator: await operators.get(id) });
 });
 
+/** PUT /:id — сохраняет оператора и переносит имя в его Room Type (roomTypesUpdated). */
 const update = wrap(async (req, res) => {
     const id = intParam(req.params.id);
     const existing = id ? await operators.get(id) : null;
     if (!existing) return fail(res, 'not_found');
     const v = await operators.validate(req.body, existing);
     if (v.error) return fail(res, v.error);
-    await operators.update(id, v.value);
-    res.json({ ok: true, operator: await operators.get(id) });
+    const roomTypesUpdated = await operators.update(id, v.value, existing);
+    res.json({ ok: true, operator: await operators.get(id), roomTypesUpdated });
 });
 
 const toggle = wrap(async (req, res) => {
@@ -110,12 +111,12 @@ const duplicate = wrap(async (req, res) => {
     res.json({ ok: true, operator: await operators.get(newId) });
 });
 
-/** DELETE /:id — только если на оператора не ссылается ни один Room Type. */
+/** DELETE /:id — только если за оператором не закреплён ни один Room Type. */
 const remove = wrap(async (req, res) => {
     const id = intParam(req.params.id);
     const existing = id ? await operators.get(id) : null;
     if (!existing) return fail(res, 'not_found');
-    const used = await operators.roomTypesCount(id);
+    const used = await operators.roomTypesCount(existing.operatorId);
     if (used > 0) return fail(res, 'operator_in_use', { roomTypesCount: used });
     await operators.remove(id);
     res.json({ ok: true });

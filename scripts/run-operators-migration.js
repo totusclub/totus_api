@@ -1,5 +1,6 @@
 // Миграция справочника операторов: node scripts/run-operators-migration.js
-// Таблица custom_room_operators + колонка custom_room_types.operator_ref_id — идемпотентно.
+// Таблица custom_room_operators — идемпотентно. Новых колонок у custom_room_types нет:
+// связь с оператором — по уже существующей custom_room_types.operator_id.
 // Первый запуск заводит оператора по умолчанию из имён, которые уже стоят у Room Type
 // (обычно один — «Arlekino», operator_id 990000), и привязывает к нему существующие Room Type:
 // до этого operator_id у каждого Room Type был свой (990000 + id), из-за чего в фильтре
@@ -28,24 +29,6 @@ const DDL = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
-// Мягкая колонка: без неё модуль custom rooms работает как раньше (см. lib/customRooms/store.js).
-const ROOM_TYPE_COLUMNS = [
-  ['operator_ref_id', 'INT NULL'],
-];
-
-async function addColumns(table, columns) {
-  const [rows] = await db.query(`SHOW COLUMNS FROM ${table}`);
-  const have = new Set(rows.map((c) => c.Field));
-  const added = [];
-  for (const [col, def] of columns) {
-    if (have.has(col)) { console.log(`= ${table}.${col}`); continue; }
-    await db.query(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
-    console.log(`✅ ${table}.${col}`);
-    added.push(col);
-  }
-  return added;
-}
-
 /** Следующий свободный operator_id из пула 990000+. */
 async function nextOperatorId() {
   const [rows] = await db.query('SELECT MAX(operator_id) AS m FROM custom_room_operators');
@@ -54,9 +37,12 @@ async function nextOperatorId() {
 }
 
 /**
- * Заводит операторов по именам, которые уже стоят у Room Type, и привязывает строки.
+ * Заводит операторов по именам, которые уже стоят у Room Type, и проставляет строкам
+ * operator_id этого оператора (там, где он ещё пустой).
  * Первому (по числу Room Type) достаётся operator_id 990000 — именно это значение
  * сейчас показывают WEB и APP, схлопывая наши синтетические id, поэтому витрина не меняется.
+ * До миграции operator_id у Room Type был NULL, а витрине отдавался вычисляемый
+ * 990000 + id Room Type — то есть каждый Room Type выглядел отдельным оператором.
  */
 async function seedFromRoomTypes() {
   const [names] = await db.query(
@@ -86,12 +72,12 @@ async function seedFromRoomTypes() {
       console.log(`= оператор «${name}» уже есть (operator_id ${operator.operator_id})`);
     }
     const [upd] = await db.query(
-      `UPDATE custom_room_types SET operator_ref_id = ?
-        WHERE operator_ref_id IS NULL
+      `UPDATE custom_room_types SET operator_id = ?, operator_name = ?
+        WHERE operator_id IS NULL
           AND COALESCE(NULLIF(TRIM(operator_name), ''), 'Arlekino') = ?`,
-      [operator.id, name],
+      [operator.operator_id, name, name],
     );
-    if (upd.affectedRows) console.log(`✅ привязано Room Type: ${upd.affectedRows} → «${name}»`);
+    if (upd.affectedRows) console.log(`✅ привязано Room Type: ${upd.affectedRows} → «${name}» (operator_id ${operator.operator_id})`);
     order += 1;
   }
 }
@@ -102,15 +88,14 @@ async function run() {
     await db.query(sql);
     console.log(`✅ ${name}`);
   }
-  const added = await addColumns('custom_room_types', ROOM_TYPE_COLUMNS);
-  const [idx] = await db.query("SHOW INDEX FROM custom_room_types WHERE Key_name = 'idx_operator_ref'");
+  const [idx] = await db.query("SHOW INDEX FROM custom_room_types WHERE Key_name = 'idx_operator'");
   if (!idx.length) {
-    await db.query('ALTER TABLE custom_room_types ADD INDEX idx_operator_ref (operator_ref_id)');
-    console.log('✅ custom_room_types.idx_operator_ref');
+    await db.query('ALTER TABLE custom_room_types ADD INDEX idx_operator (operator_id)');
+    console.log('✅ custom_room_types.idx_operator');
   }
-  // Заполняем только на первом прогоне: если колонка уже была, привязки менять нельзя.
-  if (added.includes('operator_ref_id')) await seedFromRoomTypes();
-  else console.log('= operator_ref_id уже была — привязки не трогаем');
+  // Трогаем только строки с пустым operator_id: уже проставленные привязки не меняем,
+  // поэтому повторный запуск ничего не портит.
+  await seedFromRoomTypes();
   console.log('Done. Now: pm2 restart api');
   await db.end();
 }
