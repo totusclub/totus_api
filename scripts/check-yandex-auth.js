@@ -1,5 +1,6 @@
 // Проверка входа через Яндекс ID без БД и сети: node scripts/check-yandex-auth.js
-// (входит в npm run check). Проверяет state, ticket'ы, нормализацию client/return
+// (входит в npm run check). Проверяет state, ticket'ы, нормализацию client/return,
+// запрашиваемые права, повтор с force_confirm, разбор почты из ответа Яндекса
 // и адреса возврата — то есть всё, что можно проверить без обращения к Яндексу.
 const assert = require('assert');
 
@@ -45,7 +46,21 @@ const url = yandex.authorizeUrl(state);
 assert(url.startsWith('https://oauth.yandex.ru/authorize?'), 'authorize url');
 assert(url.includes('response_type=code') && url.includes('client_id=cid'), 'authorize params');
 assert(url.includes(encodeURIComponent('login:email')), 'email scope requested');
+assert(url.includes(encodeURIComponent('login:info')), 'info scope requested');
 assert(!url.includes('csecret'), 'client_secret must never be in the authorize url');
+assert(url.includes('force_confirm=no'), 'default: без повторного экрана прав');
+
+// повтор после «почта не выдана»: экран прав показывается снова
+const forced = yandex.authorizeUrl(state, { forceConfirm: true });
+assert(forced.includes('force_confirm=yes'), 'force_confirm=yes при повторе');
+assert(forced.includes(encodeURIComponent('login:email')), 'email scope requested on retry');
+
+// почта из ответа login.yandex.ru/info
+assert.strictEqual(yandex.pickEmail({ default_email: 'User@Yandex.RU' }), 'user@yandex.ru', 'default_email');
+assert.strictEqual(yandex.pickEmail({ emails: ['  Second@ya.ru '] }), 'second@ya.ru', 'emails[0]');
+assert.strictEqual(yandex.pickEmail({ default_email: '', emails: ['', 'third@ya.ru'] }), 'third@ya.ru', 'первый непустой');
+assert.strictEqual(yandex.pickEmail({ emails: [] }), '', 'право login:email не выдано');
+assert.strictEqual(yandex.pickEmail({}), '', 'пустой профиль');
 
 // ticket: одноразовый
 const ticket = yandex.createTicket({ userId: 7, isNew: true });
