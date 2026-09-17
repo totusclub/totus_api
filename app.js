@@ -43,6 +43,7 @@ app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));
 app.use(require('./middleware/customRooms'));
 app.use('/api/admin/rooms', require('./routes/customRooms.routes'));
 app.use('/api/admin/operators', require('./routes/operators.routes'));
+app.use('/api/auth/yandex', require('./routes/yandexAuth.routes'));
 
 const BASE_URL = 'https://api.level.travel';
 const {
