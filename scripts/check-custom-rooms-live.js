@@ -125,7 +125,7 @@ async function checks() {
     assert.strictEqual(stub.checked.length, 0, 'причины пропуска нет');
     assert.strictEqual(stub.seen[0].providerPrice, 258996);
 
-    // 2. searchType не определён (request_id не в custom_room_searches) — вставляется всё равно; и при hotel
+    // 2. searchType не определён (request_id не в custom_room_searches) — вставляется всᑑ равно; и при hotel
     reset(); stub.rts = [rtFixed()];
     out = await inject.injectRooms(ltBody(), ctx(null));
     assert.strictEqual(arlekino(SOURCE(out)).length, 1, 'searchType null → без ограничений');
@@ -206,9 +206,9 @@ async function checks() {
     }
     console.log('search_type из тела LT:', JSON.stringify(seenTypes));
 
-    // 8. полный путь через middleware на реальном payload: сайт получает один номер с двумя группами
+    // 8. полный путь через middleware на реальном payload (поиск отелей): сайт получает один номер с двумя группами
     reset(); stub.rts = [rtFixed()];
-    store.getSearch = async () => ({ requestId: 'r', searchType: 'package', params: {} });
+    store.getSearch = async () => ({ requestId: 'r', searchType: 'hotel', params: {} });
     const sent = [];
     const res = { statusCode: 200, json: (b) => { sent.push(b); return res; } };
     await new Promise((resolve) => mw({ method: 'GET', path: '/hotels-rooms', query: { request_id: 'r', hotel_id: HOTEL_ID } }, res, resolve));
@@ -220,6 +220,29 @@ async function checks() {
     const ex = SOURCE(sent[0]);
     console.log('пример offer (Arlekino):', JSON.stringify(ex.offers.UAI[0]));
     console.log('пример lt_extras номера:', JSON.stringify(ex.lt_extras), 'min_price:', ex.min_price, 'meal_types:', JSON.stringify(ex.meal_types));
+
+    // 9. тип поиска (решение владельца 17.09.2026): наши предложения ТОЛЬКО при search_type = hotel.
+    //    Пакетный поиск и неизвестный тип → тело Level.Travel уходит клиенту без единого изменения.
+    assert.strictEqual(mw.showsCustomOffers('hotel'), true);
+    assert.strictEqual(mw.showsCustomOffers('package'), false);
+    assert.strictEqual(mw.showsCustomOffers(null), false, 'тип не определён → не показываем (fail-closed)');
+    for (const [searchType, label] of [['package', 'пакетный поиск'], [null, 'тип не определён']]) {
+        reset(); stub.rts = [rtFixed()];
+        store.getSearch = async () => (searchType ? { requestId: 'r', searchType, params: {} } : null);
+        const got = [];
+        const r2 = { statusCode: 200, json: (b) => { got.push(b); return r2; } };
+        await new Promise((resolve) => mw({ method: 'GET', path: '/hotels-rooms', query: { request_id: 'r', hotel_id: HOTEL_ID } }, r2, resolve));
+        // тело без search_type: при отсутствии записи поиска тип определить неоткуда
+        const bodyOut = ltBody();
+        if (searchType === null) delete bodyOut.search_type;
+        r2.json(bodyOut);
+        await new Promise((r) => setTimeout(r, 30));
+        assert.strictEqual(got.length, 1, `${label}: ответ один`);
+        assert.deepStrictEqual(got[0], bodyOut, `${label}: тело Level.Travel без изменений`);
+        assert.strictEqual(got[0].result.every((r) => arlekino(r).length === 0), true, `${label}: наших предложений нет`);
+        assert.strictEqual(SOURCE(got[0]).min_price, sample.result[0].min_price, `${label}: min_price не пересчитан`);
+        assert.strictEqual(stub.offerMap.length, 0, `${label}: карта предложений не пишется`);
+    }
 }
 
 // middleware ждёт store.isReady()
