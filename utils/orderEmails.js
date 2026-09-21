@@ -5,6 +5,7 @@ const db = require('../db');
 const { sendEmail } = require('./yandexCloudEmail');
 const { extractOrderDetails } = require('./vtbPaymentPurpose');
 const { getOrderDocuments } = require('./orderDocuments');
+const { signDocUrl } = require('../lib/orderDocLinks');
 const {
     orderCreatedTemplate,
     orderPaidPendingTemplate,
@@ -142,7 +143,10 @@ function buildPublicDocumentUrl(publicUrl) {
     if (!publicUrl) return null;
     const value = String(publicUrl).trim();
     if (/^https?:\/\//i.test(value)) return value;
-    return `${API_PUBLIC_URL}${value.startsWith('/') ? value : `/${value}`}`;
+    // Ссылка в письме тоже подписывается (К1). Сам файл идёт вложением,
+    // поэтому письмо остаётся полезным и после истечения срока ссылки.
+    const signed = signDocUrl(value.startsWith('/') ? value : `/${value}`);
+    return `${API_PUBLIC_URL}${signed}`;
 }
 
 async function loadDocumentAttachments(orderId) {

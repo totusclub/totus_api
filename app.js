@@ -37,6 +37,11 @@ app.use(helmetMiddleware());
 app.use(corsMiddleware());
 app.use(express.json());
 
+// Документы заказа (SECURITY_AUDIT_2026-09_RU.md, К1): ссылки в ответах клиенту
+// подписываются, а сама отдача файлов идёт с проверкой доступа. Оба middleware
+// обязаны стоять ДО express.static('/uploads').
+app.use(require('./middleware/signOrderDocLinks')());
+app.use('/uploads/orders', require('./middleware/orderDocumentsAccess')());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')));
 app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));

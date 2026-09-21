@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const db = require('../db');
 const {
   resolveAuthToken,
@@ -59,29 +60,44 @@ function notifyHubForLtEvent({ orderId, orderRow, event, changes, message }) {
     .catch((err) => console.error('[notify-hub] LT event hook failed:', err.message));
 }
 
-const PARTNER_API_KEY =
-  process.env.PARTNER_API_KEY || '589e52d73074435f9fc8202b7ec80673';
+// Ключ проверки входящих webhook'ов Level.Travel. Литерал-fallback убран
+// (SECURITY_AUDIT_2026-09_RU.md, К4): он лежал в открытом виде в git-истории.
+// Без PARTNER_API_KEY в .env callback'и отклоняются — это осознанный fail-closed.
+const PARTNER_API_KEY = process.env.PARTNER_API_KEY || '';
+
+function keysMatch(given, expected) {
+  if (!given || !expected) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 
 function verifyPartnerApiKey(req, res, next) {
   const key = String(req.headers['partner-api-key'] || '').trim();
   const expected = String(PARTNER_API_KEY || '').trim();
 
-  if (!key || key !== expected) {
+  if (!expected) {
+    logCallbackError(LOG_NOTIFY, 'AUTH', 'PARTNER_API_KEY не задан — callback отклонён', {
+      path: req.path,
+      order_id: req.body?.order_id,
+      event: req.body?.event,
+    });
+    return res.status(503).json({ success: false, error: 'partner_key_not_configured' });
+  }
+
+  if (!keysMatch(key, expected)) {
     logCallbackBanner(LOG_NOTIFY, '❌ CALLBACK REJECTED — bad/missing Partner-Api-Key', {
       path: req.originalUrl || req.path,
       method: req.method,
       ip: req.ip,
       has_key: Boolean(key),
-      key_length: key.length,
-      expected_length: expected.length,
       order_id: req.body?.order_id,
       event: req.body?.event,
     });
     logCallbackError(LOG_NOTIFY, 'AUTH', 'Rejected — invalid Partner-Api-Key (nothing saved)', {
       path: req.path,
       has_key: Boolean(key),
-      key_length: key.length,
-      expected_length: expected.length,
       order_id: req.body?.order_id,
       event: req.body?.event,
     });
