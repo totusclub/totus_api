@@ -77,25 +77,80 @@ function issueUserTokens(userRow) {
     return { auth: true, authToken: accessToken, accessToken, refreshToken };
 }
 
+// Необязательные поля регистрации. Приложение (уже установленные версии) шлёт
+// только имя и email — без фамилии и телефона, а колонки users.l_name / users.phone
+// в базе могут быть NOT NULL. Чтобы регистрация не падала с 500, пустое значение
+// пишем как NULL, если колонка это допускает, иначе — как пустую строку.
+// Схема читается из INFORMATION_SCHEMA один раз на процесс.
+let usersNullableCache = null;
+async function getUsersNullable() {
+    if (usersNullableCache) return usersNullableCache;
+    const nullable = { l_name: true, phone: true };
+    try {
+        const [cols] = await db.query(
+            `SELECT COLUMN_NAME, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+               AND COLUMN_NAME IN ('l_name', 'phone')`,
+        );
+        for (const c of cols) nullable[c.COLUMN_NAME] = c.IS_NULLABLE === 'YES';
+        usersNullableCache = nullable;
+    } catch (e) {
+        console.warn('[SIGNUP] cannot read users schema:', e.message);
+        // консервативно: считаем, что NULL нельзя
+        return { l_name: false, phone: false };
+    }
+    return usersNullableCache;
+}
+
+function optionalField(value, allowNull) {
+    const str = value === undefined || value === null ? '' : String(value).trim();
+    if (str) return str;
+    return allowNull ? null : '';
+}
+
 exports.signup = async (req, res) => {
-    const { name, l_name, phone } = req.body;
     const email = normalizeEmail(req.body.email);
     const code = resolveVerificationCode(email);
+    let createdUserId = null;
 
     try {
         if (!(await assertCaptcha(req, res, { skip: isAppleDemoEmail(email) }))) return;
 
+        const name = String(req.body.name ?? '').trim();
+        if (!email || !name) {
+            return res.status(400).json({ message: 'Укажите имя и email' });
+        }
+        const nullable = await getUsersNullable();
+        const lName = optionalField(req.body.l_name, nullable.l_name);
+        const phone = optionalField(req.body.phone, nullable.phone);
+
         const codeLoyalty = generateUniqueLoyaltyId();
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         if (user.length) return res.status(400).json({ message: 'Email already exists' });
-        await db.query(
+        const [ins] = await db.query(
             'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, l_name, email, phone, code, codeLoyalty]
+            [name, lName, email, phone, code, codeLoyalty]
         );
-        await sendVerificationEmail(email, code, { name });
+        createdUserId = ins?.insertId ?? null;
+
+        try {
+            await sendVerificationEmail(email, code, { name });
+        } catch (mailErr) {
+            // Письмо не ушло — не оставляем «висящего» пользователя, иначе повторная
+            // попытка упрётся в «Email already exists».
+            console.error('[SIGNUP] verification email failed:', mailErr.message);
+            if (createdUserId) {
+                await db.query('DELETE FROM users WHERE id = ? AND email = ?', [createdUserId, email]).catch(() => {});
+            }
+            return res.status(502).json({
+                message: 'Не удалось отправить код на почту. Попробуйте ещё раз через минуту.',
+                error: 'email_send_failed',
+            });
+        }
 
         res.status(201).json({ message: 'Пользователь создан. Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
+        console.error('[SIGNUP] failed:', err.code || '', err.message);
         res.status(500).json({ message: 'Signup failed', error: err.message });
     }
 };
