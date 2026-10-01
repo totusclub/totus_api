@@ -12,6 +12,15 @@ process.env.YANDEX_OAUTH_REDIRECT_URI = 'https://api.totus.club/api/auth/yandex/
 process.env.YANDEX_AUTH_RETURN_WEB = 'https://totus.club';
 process.env.YANDEX_AUTH_RETURN_APP = 'totus://auth/yandex';
 
+// БД и lib/auth подменяются до загрузки модулей: проверка идёт без MySQL и сети.
+const path = require('path');
+function stub(rel, exportsObj) {
+  const file = require.resolve(path.join(__dirname, '..', rel));
+  require.cache[file] = { id: file, filename: file, loaded: true, exports: exportsObj };
+}
+stub('db', { query: async (sql) => (String(sql).startsWith('SHOW TABLES') ? [[{ t: 'user_identities' }]] : [[]]) });
+stub('lib/auth', { signUserToken: () => 'a', signRefreshToken: () => 'r', publicUser: (u) => u });
+
 const yandex = require('../lib/yandexAuth');
 
 assert(yandex.isConfigured(), 'configured with env');
@@ -84,8 +93,58 @@ assert(yandex.returnUrl('desktop', { error: 'yandex_email_required' }).startsWit
 assert.strictEqual(yandex.avatarUrl(null), null);
 assert(yandex.avatarUrl('abc').includes('avatars.yandex.net'), 'avatar url');
 
-// выключенный раздел
-delete process.env.YANDEX_OAUTH_CLIENT_SECRET;
-assert(!yandex.isConfigured(), 'without secret the module is off');
+// state: срок жизни и разбор просроченного (01.10: «Войти как…» на странице Яндекса,
+// открытой дольше 10 минут, давало голый JSON yandex_state_invalid на api.totus.club)
+assert(yandex.STATE_TTL_SEC >= 60 * 60, 'state живёт не меньше часа');
+assert.strictEqual(yandex.inspectState(state).status, 'ok', 'свежий state');
+const nowSec = Math.floor(Date.now() / 1000);
+const expired = jwt.sign(
+  { c: 'app', r: '/lk', n: 'x', typ: 'yx_state', iat: nowSec - 7200, exp: nowSec - 3600 },
+  's1',
+);
+const exp = yandex.inspectState(expired);
+assert.deepStrictEqual(exp, { status: 'expired', client: 'app', returnPath: '/lk' }, 'просроченный state: наш, client/return сохранены');
+assert.strictEqual(yandex.verifyState(expired), null, 'verifyState по-прежнему не принимает просроченный');
+const expiredForeign = jwt.sign({ c: 'app', r: '/lk', typ: 'yx_state', iat: nowSec - 7200, exp: nowSec - 3600 }, 'other');
+assert.strictEqual(yandex.inspectState(expiredForeign).status, 'invalid', 'просроченный с чужой подписью — invalid');
+assert.deepStrictEqual(yandex.inspectState('garbage'), { status: 'invalid', client: 'web', returnPath: '/' }, 'мусор → сайт');
+assert.strictEqual(yandex.inspectState(foreign).status, 'invalid', 'чужой typ → invalid');
+const expiredEvil = jwt.sign({ c: 'app', r: '//evil.tld', typ: 'yx_state', iat: nowSec - 7200, exp: nowSec - 3600 }, 's1');
+assert.strictEqual(yandex.inspectState(expiredEvil).returnPath, '/', 'return из просроченного state тоже фильтруется');
 
-console.log('ALL YANDEX AUTH CHECKS PASSED');
+// callback: при плохом state — редирект на экран входа с ошибкой, а не JSON на api.totus.club
+(async () => {
+  yandex.resetSchemaCache();
+  const ctrl = require('../controllers/yandexAuth.controller');
+
+  const call = async (query) => {
+    const res = {
+      code: null, location: null, body: null,
+      status(c) { this.code = c; return this; },
+      json(b) { this.body = b; return this; },
+      redirect(c, l) { this.code = c; this.location = l; return this; },
+    };
+    await ctrl.callback({ query }, res);
+    return res;
+  };
+
+  const r1 = await call({ state: expired, code: 'c' });
+  assert.strictEqual(r1.code, 302, 'просроченный state → 302');
+  assert.strictEqual(r1.location, 'totus://auth/yandex?error=yandex_state_expired&return=%2Flk', 'туда, откуда начинали, с ошибкой');
+
+  const r2 = await call({ state: 'garbage', code: 'c' });
+  assert.strictEqual(r2.code, 302, 'чужой state → 302, а не JSON');
+  assert.strictEqual(r2.location, 'https://totus.club/auth/yandex?error=yandex_state_invalid&return=%2F', 'чужой state → сайт');
+
+  const r3 = await call({ state: yandex.signState({ client: 'web', returnPath: '/lk' }), error: 'access_denied' });
+  assert.strictEqual(r3.location, 'https://totus.club/auth/yandex?error=yandex_access_denied&return=%2Flk', 'свежий state работает как раньше');
+
+  // выключенный раздел
+  delete process.env.YANDEX_OAUTH_CLIENT_SECRET;
+  assert(!yandex.isConfigured(), 'without secret the module is off');
+
+  console.log('ALL YANDEX AUTH CHECKS PASSED');
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
