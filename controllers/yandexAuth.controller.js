@@ -73,13 +73,20 @@ exports.start = async (req, res) => {
 exports.callback = async (req, res) => {
     if (!(await ensureEnabled(res))) return;
 
-    const parsed = yandex.verifyState(req.query.state);
-    if (!parsed) {
-        // Без state неизвестно, куда возвращать — отвечаем страницей-заглушкой API.
-        return res.status(400).json({ error: 'yandex_state_invalid' });
-    }
+    const parsed = yandex.inspectState(req.query.state);
     const { client, returnPath } = parsed;
     const fail = (code) => res.redirect(302, yandex.returnUrl(client, { error: code, return: returnPath }));
+
+    // Раньше здесь был голый JSON 400 на api.totus.club — человек оставался на странице API
+    // без кнопок. Теперь возвращаем на экран входа с понятной ошибкой и «Попробовать снова».
+    if (parsed.status === 'expired') {
+        console.warn(`[YANDEX-AUTH] state expired (client=${client}) — страницу Яндекса держали открытой дольше ${yandex.STATE_TTL_SEC / 60} мин`);
+        return fail('yandex_state_expired');
+    }
+    if (parsed.status !== 'ok') {
+        console.warn('[YANDEX-AUTH] state invalid — возвращаем на сайт');
+        return fail('yandex_state_invalid');
+    }
 
     // Пользователь нажал «Отказать» на странице Яндекса.
     if (req.query.error) {
