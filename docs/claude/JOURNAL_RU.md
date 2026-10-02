@@ -7,6 +7,17 @@
 
 ## 02.10.2026
 
+### Звонки, этап 1: результаты проверки сервера
+- **Владелец прислал:**
+  - PM2 (`front_calling` на `main`);
+  - `APN_PRODUCTION=1`;
+  - в логе 10 × `[apn] failed` (`BadDeviceToken`, `DeviceTokenNotForTopic`) и повторяющийся FCM `not a valid registration token`.
+- **Вывод:**
+  - S2 (веб затирает voipToken) подтверждён на проде;
+  - PR #7 на проде, вероятно, не работает;
+  - W3 уже на проде.
+- **Не подтверждено:** режим TURN и есть ли `multi-topic VoIP enabled` в полном логе. Отправлены дополнительные команды. Подробно — аудит §7.
+
 ### Звонки, этап 1 — [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14)
 - **Решение владельца.** Идём строго по плану аудита (§8), этап за этапом: каждый этап доводим до рабочего состояния, потом следующий.
 - **Сделано:**
