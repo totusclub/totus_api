@@ -61,7 +61,7 @@
 | D6 | Безопасность: `AUTH_MODE=enforce` не включён | `claude/SECURITY_ENFORCE_MATRIX_RU.md` | Три клиентские правки + решение по гостевому бронированию |
 | D7 | Приложение поддержки: Firebase `club.totus.support`, App ID Apple, сборка | `claude/SUPPORT_APP_STATUS_RU.md` | Владелец |
 | D8 | Хвосты Б.1: удалить TURN-пользователя `test` после релиза приложения, перепубликовать `pkg/*`, webhook-ключ LT, GitHub Advanced Security | `claude/ROADMAP_RU.md`, `claude/SECURITY_AUDIT_SECRETS_RU.md` | Владелец |
-| D9 | Косметика: в totus_ai_v2 `server/llm.ts` escape ` ` в регэкспе стал самим символом NBSP (поведение то же) | totus_ai_v2 #2 | При следующей правке файла вернуть ` ` |
+| D9 | Косметика: в totus_ai_v2 `server/llm.ts` escape ` ` в регэкспе стал самим символом NBSP (поведение то же) | totus_ai_v2 #2 | При следующей правке файла вернуть ` ` |
 | D10 | totus_APP: тот же `VoipService.ts` (исходник порта) — вероятно, та же ошибка ответа из закрытого приложения на iOS и повторная обработка ответа | Выявлено 30.09 при разборе Support App | После проверки фикса в Support App на устройстве перенести в totus_APP отдельным PR (с «добро») |
 
 ---
