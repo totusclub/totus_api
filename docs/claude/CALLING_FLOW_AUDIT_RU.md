@@ -5,8 +5,9 @@
 | Этап | Состояние |
 |---|---|
 | 1. A1 + A6 + проверки сервера | **Проверено владельцем 02.10**: два звонка соединились на обоих устройствах. PR: [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) |
-| 2. Сервер | Начат по находке владельца («авторизован на сайте — звонок не приходит на телефон»): S1, S2, S3, S6 — [calling_api_v2 #8](https://github.com/tosmedia/calling_api_v2/pull/8), ждём слияния и проверки. Дальше: S4 (state, таймаут, отмена push), S5, P1-2 |
-| 3–7 | Не начаты |
+| 2. Сервер | [calling_api_v2 #8](https://github.com/tosmedia/calling_api_v2/pull/8) **слит и задеплоен** (S1, S2, S3, S6): приложение и сайт открыты — звонят оба (проверка владельца). Дальше: S4 (state, таймаут, отмена push), S5, P1-2 |
+| 3. totus_APP | Начат по находке владельца («приложение закрыто, сайт открыт — на телефон не приходит»): PKPushRegistry при запуске + A2, A3, P1-3 (перенос из Support App) — [totus_APP #15](https://github.com/tosmedia/totus_APP/pull/15), ждём проверки на устройстве. Дальше: A4/A5 (Android), P1-8, P1-11 |
+| 4–7 | Не начаты. Решение владельца: после стабильной работы сценария «закрытое приложение» проходим подряд все оставшиеся пункты |
 
 **Что прочитано (через GitHub-коннектор):**
 - `calling_api_v2@prod` b4349fc: `index.js`, `middleware/auth.js`, `lib/*`, `db.js`;

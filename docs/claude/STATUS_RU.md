@@ -11,7 +11,7 @@
 
 | Чат | Задача | Репо / слой | С какого времени |
 |---|---|---|---|
-| этот | Звонки по плану аудита: этап 1 проверен владельцем; звонок на все устройства — calling_api_v2 #8 (ждём слияния и проверки); затем остальное из этапа 2 | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
+| этот | Звонки: #8 слит; закрытое приложение + сайт — totus_APP #15 (ждём проверки на устройстве); затем подряд все остальные пункты аудита | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
 | этот | «Мои заказы» медленно — диагностика готова, ждём замеры и «добро» владельца | totus_API `/user/orders`, totus_WEB профиль | 01.10 |
 
 ---
@@ -21,7 +21,7 @@
 | PR | Что | Что нужно от владельца |
 |---|---|---|
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
-| [calling_api_v2 #8](https://github.com/tosmedia/calling_api_v2/pull/8) | Звонок на все устройства пользователя (телефон + сайт / панель), S1/S2/S3/S6 | Squash and merge в `prod`, `npm run check`, `pm2 restart api_calling`, чек-лист в PR |
+| [totus_APP #15](https://github.com/tosmedia/totus_APP/pull/15) | iOS: звонок в закрытое приложение (PKPushRegistry при запуске + восстановление ответа из Support App) | `npm run check`, TestFlight, сценарии (а)–(г) из PR, слияние |
 | [totus_support_app #2](https://github.com/tosmedia/totus_support_app/pull/2) | Звонки, этап 1: `VoipService.ts` из PR #1 + ранний запрос микрофона (iOS) | `npm run check`, сборка, TestFlight, чек-лист в PR; слияние |
 | [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) | Звонки, этап 1: ранний запрос микрофона (iOS) | Сборка, TestFlight, проверка первого звонка после установки; слияние |
 | [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — слит 30.09 без `VoipService.ts` | iOS: ответ из закрытого / фона / экрана блокировки | Файл добавлен в #2 — патч вручную применять не нужно |
@@ -74,7 +74,7 @@
 | totus_ai_v2 | нет (`typecheck:server`, `lint`) | 0 — завести (D2) |
 | totus_support_app | `npm run check` (Node ≥ 22.18) | 2 скрипта, 24 проверки: `check-voip-answer-recovery` (16, проходят только с `VoipService.ts` из #2), `check-mic-permission` (8, ветка `claude/voip-stage1`) |
 | calling_api_v2 | `npm run check` | + `check-multi-device-calls.js` — 17 сценариев на настоящем `index.js` (ветка `claude/calls-multi-device`) |
-| totus_APP | `npm run check` (Node ≥ 22.18) | 1 скрипт, 9 проверок: `check-mic-permission` (ветка `claude/voip-mic-permission`) |
+| totus_APP | `npm run check` (Node ≥ 22.18) | 2 скрипта: `check-mic-permission` (9, в main), `check-voip-answer-recovery` (15, ветка `claude/voip-closed-app`) |
 | totus_WEB | `npm run check` (Node ≥ 22.18) | 1 скрипт, 10 проверок: `scripts/check-perf-stage1.mjs` (в ветке PR #25) |
 | Totus_admin, totus_APP, totus_desktop, calling_v2, calling_api_v2 | не заведены | — |
 
