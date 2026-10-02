@@ -205,6 +205,13 @@ ICE: trickle, каждый кандидат идёт через POST /candidate 
   - **`[fcm] … not a valid FCM registration token` — повторяется.** Подтверждает S2: веб-клиенты пишут `voipToken = web-…`, сервер принимает его за Android-токен и шлёт FCM. Firebase при этом инициализирован (ошибка на уровне токена, а не настройки).
   - `stun-only = 0` ничего не доказывает: предупреждение пишется другим текстом («отдаю только STUN») и один раз после старта. Режим TURN не подтверждён.
 
+- **Уточнение (владелец, 02.10):**
+  - **PR #7 задеплоен.** На сервере `b4349fc` (слияние #7), `multi-topic VoIP enabled` в логе 3 раза — по разу на каждый старт. `APN_VOIP_TOPIC_ALT` не задан, поэтому используется значение по умолчанию `club.totus.support.voip`. Оно совпадает с bundle id Support App (`club.totus.support`, team `C6258722D6`).
+    - Ошибки `DeviceTokenNotForTopic` в логе, вероятно, остались от времени до перезапуска. Проверяем живым звонком: должна появиться строка `[apn] VoIP push delivered with topic club.totus.support.voip`.
+  - **TURN** — `TURN_SECRET` есть, предупреждения «только STUN» в логе ошибок нет: режим ephemeral, relay работает.
+  - **Firebase** — `FIREBASE_CREDENTIALS_PATH` задан, FCM отправляется. Ошибки только от токенов `web-…` (S2).
+  - **`APN_PRODUCTION=1`** — пуши уходят только через production APNs. Обе сборки Debug подписаны с `aps-environment=development` (это sandbox-токены), поэтому VoIP-звонки проверяем только на TestFlight / Release.
+
 ## 8. Предлагаемый порядок (на решение владельца)
 
 1. **Быстро, без риска:**

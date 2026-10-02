@@ -7,6 +7,15 @@
 
 ## 02.10.2026
 
+### Звонки, этап 1: проверки сервера закрыты
+- **Подтверждено:**
+  - PR #7 задеплоен (`b4349fc`, `multi-topic` при каждом старте);
+  - TURN в режиме ephemeral;
+  - Firebase настроен;
+  - bundle id Support App `club.totus.support` совпадает с alt-topic.
+- `BadDeviceToken` — это токены Debug-сборок (sandbox) при `APN_PRODUCTION=1`. Звонки проверяем только на TestFlight.
+- **Осталось для закрытия этапа 1:** живой звонок на TestFlight-сборках обоих приложений по чек-листам PR (support_app #2, totus_APP #14) с наблюдением за логом `api_calling`.
+
 ### Звонки, этап 1: результаты проверки сервера
 - **Владелец прислал:**
   - PM2 (`front_calling` на `main`);
