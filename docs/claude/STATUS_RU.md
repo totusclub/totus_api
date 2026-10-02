@@ -11,6 +11,7 @@
 
 | Чат | Задача | Репо / слой | С какого времени |
 |---|---|---|---|
+| этот | Звонки: аудит готов (`CALLING_FLOW_AUDIT_RU.md`), ждём выбора владельца | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
 | этот | «Мои заказы» медленно — диагностика готова, ждём замеры и «добро» владельца | totus_API `/user/orders`, totus_WEB профиль | 01.10 |
 
 ---
@@ -20,8 +21,8 @@
 | PR | Что | Что нужно от владельца |
 |---|---|---|
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
-| [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) | iOS: звонок соединяется сразу после «Ответить» (закрыто / фон / экран блокировки); только приложение, сервер не трогаем | Применить в ветке патч `VoipService.ts` (196 КБ не проходит через коннектор; команды в PR), `npm run check`, сборка Xcode, TestFlight, проверка на телефоне |
-| [calling_api_v2 #7](https://github.com/tosmedia/calling_api_v2/pull/7) | VoIP-пуши iOS для приложения Totus Support (доп. APNs topic) | Слить в `prod`, задеплоить; шаги по приложению — `claude/SUPPORT_APP_STATUS_RU.md` |
+| [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — **слит 30.09 без `VoipService.ts`** | iOS: ответ из закрытого / фона / экрана блокировки | В `main` применить патч `VoipService-background-answer.patch` (хеш `f53230a1`): без него ответ до старта JS теряется, `npm run check` красный |
+| [calling_api_v2 #7](https://github.com/tosmedia/calling_api_v2/pull/7) — **слит в `prod` 30.09** | VoIP-пуши iOS для Totus Support (доп. APNs topic) | Проверить деплой: в логе pm2 строка `[apn] multi-topic VoIP enabled` |
 | ветка [`claude/docs-sync`](https://github.com/tosmedia/totus_API/tree/claude/docs-sync) (постоянная, без PR) | Зеркало документов проекта в `totus_API/docs`, обновляется после каждого изменения | Решить по чувствительным данным (см. JOURNAL 01.10) |
 | [totus_API #24](https://github.com/tosmedia/totus_API/pull/24) | CORS: свой режим, 403, Origin десктопа, exposedHeaders, maxAge | Ревью и слияние |
 | [totus_desktop #6](https://github.com/tosmedia/totus_desktop/pull/6) | macOS codesign: entitlements для helper-процессов | Ревью и слияние |
