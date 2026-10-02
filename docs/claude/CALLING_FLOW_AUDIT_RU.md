@@ -5,8 +5,8 @@
 | Этап | Состояние |
 |---|---|
 | 1. A1 + A6 + проверки сервера | **Проверено владельцем 02.10**: два звонка соединились на обоих устройствах. PR: [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) |
-| 2. Сервер | #8 **проверен владельцем** (S1, S2, S3, S6). [calling_api_v2 #9](https://github.com/tosmedia/calling_api_v2/pull/9): S4 (state, таймаут, отмена для разбуженного телефона), S5 (502, удаление мёртвых токенов), P1-2 (SDP по размеру) — ждём слияния и проверки. Осталось на потом: P1-18 (проверка участника звонка — вместе с `AUTH_MODE=enforce`), busy (P1-13) |
-| 3. totus_APP | [totus_APP #15](https://github.com/tosmedia/totus_APP/pull/15) **проверен владельцем**: закрытое приложение + сайт — звонок приходит, ответ с любого устройства соединяется (PKPushRegistry при запуске, A2, A3, P1-3). Осталось: A4/A5 (Android), P1-8, P1-11 |
+| 2. Сервер | #8 проверен владельцем. #9 слит (S4, S5, P1-2). По находкам владельца (после #9 «ответил без связи», звонок не закрывается) — [#10](https://github.com/tosmedia/calling_api_v2/pull/10): replay `ended` только для нового сокета, поздний `/end`, «пропущенный» после таймаута. Ждём выката. Осталось на потом: P1-18, P1-13 |
+| 3. Приложения | totus_APP #15 проверен владельцем. [totus_APP #16](https://github.com/tosmedia/totus_APP/pull/16) и [support_app #3](https://github.com/tosmedia/totus_support_app/pull/3): сверка `callId` в `call-state` (P1-14 для приложений), loyaltyId без пробелов, 4xx на ответ → отбой, watchdog «нет медиа 20 с» (часть P1-4/P1-5). Ждём проверки. Осталось: A4/A5 (Android), P1-8, P1-11, ICE restart |
 | 4. Сайт и панель | Следующий: W1–W3, P1-1, P1-7, P1-15 |
 | 5–7 | Не начаты: статусы и журнал звонка, Android-платформа, мультиустройство уже сделано в #8 |
 

@@ -11,7 +11,7 @@
 
 | Чат | Задача | Репо / слой | С какого времени |
 |---|---|---|---|
-| этот | Звонки: #8 и totus_APP #15 проверены владельцем; этап 2 сервер — calling_api_v2 #9 (ждём слияния и проверки); затем сайт / панель, Android, статусы | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
+| этот | Звонки: #9 слит; по находкам владельца — calling_api_v2 #10 + totus_APP #16 + support_app #3 (ждём выката и проверки всего flow); затем сайт / панель, Android, статусы | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
 | этот | «Мои заказы» медленно — диагностика готова, ждём замеры и «добро» владельца | totus_API `/user/orders`, totus_WEB профиль | 01.10 |
 
 ---
@@ -21,7 +21,9 @@
 | PR | Что | Что нужно от владельца |
 |---|---|---|
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
-| [calling_api_v2 #9](https://github.com/tosmedia/calling_api_v2/pull/9) | Звонки: состояние, таймаут 60 с, отмена для разбуженного телефона, 502 при сбое push, SDP по размеру (S4, S5, P1-2) | Squash and merge в `prod`, `npm run check`, `pm2 restart api_calling`, 4 сценария из PR |
+| [calling_api_v2 #10](https://github.com/tosmedia/calling_api_v2/pull/10) | Устаревший `ended` не обрывает новый звонок (исправление #9), поздний `/end`, «пропущенный» после 61 с | **Первым**: squash-merge в `prod`, `npm run check`, `pm2 restart api_calling` |
+| [totus_APP #16](https://github.com/tosmedia/totus_APP/pull/16) | Сверка `callId`, loyaltyId без пробелов, 4xx на ответ → отбой, watchdog 20 с без медиа | После #10: squash-merge, TestFlight, сценарии из PR |
+| [totus_support_app #3](https://github.com/tosmedia/totus_support_app/pull/3) | То же для Support (звонящий) | После #10: squash-merge, TestFlight |
 | [totus_support_app #2](https://github.com/tosmedia/totus_support_app/pull/2) | Звонки, этап 1: `VoipService.ts` из PR #1 + ранний запрос микрофона (iOS) | `npm run check`, сборка, TestFlight, чек-лист в PR; слияние |
 | [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) | Звонки, этап 1: ранний запрос микрофона (iOS) | Сборка, TestFlight, проверка первого звонка после установки; слияние |
 | [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — слит 30.09 без `VoipService.ts` | iOS: ответ из закрытого / фона / экрана блокировки | Файл добавлен в #2 — патч вручную применять не нужно |
@@ -73,7 +75,7 @@
 | totus_API | `npm run check` | `node --check app.js` + 13 скриптов `scripts/check-*.js` (auth-core, notify-hub, custom-rooms ×5, operators, yandex-auth, phone, order-docs, home-hero) |
 | totus_ai_v2 | нет (`typecheck:server`, `lint`) | 0 — завести (D2) |
 | totus_support_app | `npm run check` (Node ≥ 22.18) | 2 скрипта, 24 проверки: `check-voip-answer-recovery` (16, проходят только с `VoipService.ts` из #2), `check-mic-permission` (8, ветка `claude/voip-stage1`) |
-| calling_api_v2 | `npm run check` | + `check-multi-device-calls.js` (17, в prod) + `check-call-lifecycle.js` (13, ветка `claude/calls-lifecycle`) — на настоящем `index.js` |
+| calling_api_v2 | `npm run check` | + `check-multi-device-calls.js` (17, в prod) + `check-call-lifecycle.js` (13 в prod; 15 в ветке `claude/calls-stale-replay`) — на настоящем `index.js` |
 | totus_APP | `npm run check` (Node ≥ 22.18) | 2 скрипта: `check-mic-permission` (9, в main), `check-voip-answer-recovery` (15, ветка `claude/voip-closed-app`) |
 | totus_WEB | `npm run check` (Node ≥ 22.18) | 1 скрипт, 10 проверок: `scripts/check-perf-stage1.mjs` (в ветке PR #25) |
 | Totus_admin, totus_APP, totus_desktop, calling_v2, calling_api_v2 | не заведены | — |
