@@ -11,7 +11,7 @@
 
 | Чат | Задача | Репо / слой | С какого времени |
 |---|---|---|---|
-| этот | Звонки: аудит готов (`CALLING_FLOW_AUDIT_RU.md`), ждём выбора владельца | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
+| этот | Звонки по плану аудита: этап 1 в PR (support_app #2, totus_APP #14), ждём проверки на устройстве; затем этап 2 (сервер) | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
 | этот | «Мои заказы» медленно — диагностика готова, ждём замеры и «добро» владельца | totus_API `/user/orders`, totus_WEB профиль | 01.10 |
 
 ---
@@ -21,7 +21,9 @@
 | PR | Что | Что нужно от владельца |
 |---|---|---|
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
-| [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — **слит 30.09 без `VoipService.ts`** | iOS: ответ из закрытого / фона / экрана блокировки | В `main` применить патч `VoipService-background-answer.patch` (хеш `f53230a1`): без него ответ до старта JS теряется, `npm run check` красный |
+| [totus_support_app #2](https://github.com/tosmedia/totus_support_app/pull/2) | Звонки, этап 1: `VoipService.ts` из PR #1 + ранний запрос микрофона (iOS) | `npm run check`, сборка, TestFlight, чек-лист в PR; слияние |
+| [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) | Звонки, этап 1: ранний запрос микрофона (iOS) | Сборка, TestFlight, проверка первого звонка после установки; слияние |
+| [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — слит 30.09 без `VoipService.ts` | iOS: ответ из закрытого / фона / экрана блокировки | Файл добавлен в #2 — патч вручную применять не нужно |
 | [calling_api_v2 #7](https://github.com/tosmedia/calling_api_v2/pull/7) — **слит в `prod` 30.09** | VoIP-пуши iOS для Totus Support (доп. APNs topic) | Проверить деплой: в логе pm2 строка `[apn] multi-topic VoIP enabled` |
 | ветка [`claude/docs-sync`](https://github.com/tosmedia/totus_API/tree/claude/docs-sync) (постоянная, без PR) | Зеркало документов проекта в `totus_API/docs`, обновляется после каждого изменения | Решить по чувствительным данным (см. JOURNAL 01.10) |
 | [totus_API #24](https://github.com/tosmedia/totus_API/pull/24) | CORS: свой режим, 403, Origin десктопа, exposedHeaders, maxAge | Ревью и слияние |
@@ -69,7 +71,8 @@
 |---|---|---|
 | totus_API | `npm run check` | `node --check app.js` + 13 скриптов `scripts/check-*.js` (auth-core, notify-hub, custom-rooms ×5, operators, yandex-auth, phone, order-docs, home-hero) |
 | totus_ai_v2 | нет (`typecheck:server`, `lint`) | 0 — завести (D2) |
-| totus_support_app | `npm run check` (Node ≥ 22.18) | 1 скрипт, 16 проверок: `scripts/check-voip-answer-recovery.mjs` — в ветке `claude/support-voip-background-answer`, после слияния — в main |
+| totus_support_app | `npm run check` (Node ≥ 22.18) | 2 скрипта, 24 проверки: `check-voip-answer-recovery` (16, проходят только с `VoipService.ts` из #2), `check-mic-permission` (8, ветка `claude/voip-stage1`) |
+| totus_APP | `npm run check` (Node ≥ 22.18) | 1 скрипт, 9 проверок: `check-mic-permission` (ветка `claude/voip-mic-permission`) |
 | totus_WEB | `npm run check` (Node ≥ 22.18) | 1 скрипт, 10 проверок: `scripts/check-perf-stage1.mjs` (в ветке PR #25) |
 | Totus_admin, totus_APP, totus_desktop, calling_v2, calling_api_v2 | не заведены | — |
 

@@ -7,6 +7,25 @@
 
 ## 02.10.2026
 
+### Звонки, этап 1 — [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14)
+- **Решение владельца.** Идём строго по плану аудита (§8), этап за этапом: каждый этап доводим до рабочего состояния, потом следующий.
+- **Сделано:**
+  - A1: в `totus_support_app` (`claude/voip-stage1`) добавлен `VoipService.ts` из патча PR #1 (blob `f53230a1`). Коннектор пропустил файл в 196 КБ через отдельного субагента одним `push_files`, так что ручной `git apply` больше не нужен.
+  - A6: `micPermission.ts` — ранний запрос микрофона на iOS через `permissions` из `react-native-webrtc`, только при `AppState active`.
+    - support app: вызов в `AuthContext`;
+    - totus_APP: в `voipAuth.setVoipAccessToken`.
+  - В totus_APP заведён `npm run check`.
+- **Проверено:**
+  - support app: `npm run check` 16/16 + 8/8;
+  - totus_APP: 9/9;
+  - проверки подключения падают на исходном коде;
+  - `tsc --strict` для `micPermission.ts`;
+  - SHA всех файлов в ветках сверены.
+- **Осталось (владелец):**
+  - сборка и TestFlight обоих приложений, проверка на телефоне по чек-листу в PR;
+  - серверные проверки (аудит §7).
+- **Дальше:** этап 2 (сервер) — после подтверждения этапа 1 на устройстве.
+
 ### Звонки: полный аудит calling flow (без изменений) — `claude/CALLING_FLOW_AUDIT_RU.md`
 - **Запрос владельца.** Проверить все комбинации (APP, support app, WEB, calling_v2) на iOS и Android во всех состояниях телефона; код не менять.
 - **Сделано:** прочитаны `calling_api_v2@prod`, `totus_APP@main`, `totus_support_app@main`, `totus_WEB@main`, `calling_v2` (main/develop). Итог: матрица комбинаций, причины «первого звонка», P0/P1/P2 с файлами и строками, статусы для UI, план логирования, порядок работ.
