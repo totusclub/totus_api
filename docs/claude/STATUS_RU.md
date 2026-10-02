@@ -22,6 +22,7 @@
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
 | [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) | iOS: звонок соединяется сразу после «Ответить» (закрыто / фон / экран блокировки); только приложение, сервер не трогаем | Применить в ветке патч `VoipService.ts` (196 КБ не проходит через коннектор; команды в PR), `npm run check`, сборка Xcode, TestFlight, проверка на телефоне |
 | [calling_api_v2 #7](https://github.com/tosmedia/calling_api_v2/pull/7) | VoIP-пуши iOS для приложения Totus Support (доп. APNs topic) | Слить в `prod`, задеплоить; шаги по приложению — `claude/SUPPORT_APP_STATUS_RU.md` |
+| ветка [`claude/docs-sync`](https://github.com/tosmedia/totus_API/tree/claude/docs-sync) (постоянная, без PR) | Зеркало документов проекта в `totus_API/docs`, обновляется после каждого изменения | Решить по чувствительным данным (см. JOURNAL 01.10) |
 | [totus_API #24](https://github.com/tosmedia/totus_API/pull/24) | CORS: свой режим, 403, Origin десктопа, exposedHeaders, maxAge | Ревью и слияние |
 | [totus_desktop #6](https://github.com/tosmedia/totus_desktop/pull/6) | macOS codesign: entitlements для helper-процессов | Ревью и слияние |
 
