@@ -11,7 +11,7 @@
 
 | Чат | Задача | Репо / слой | С какого времени |
 |---|---|---|---|
-| этот | Звонки по плану аудита: этап 1 в PR (support_app #2, totus_APP #14), ждём проверки на устройстве; затем этап 2 (сервер) | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
+| этот | Звонки по плану аудита: этап 1 проверен владельцем; звонок на все устройства — calling_api_v2 #8 (ждём слияния и проверки); затем остальное из этапа 2 | calling_api_v2, totus_APP, totus_support_app, totus_WEB, calling_v2 | 02.10 |
 | этот | «Мои заказы» медленно — диагностика готова, ждём замеры и «добро» владельца | totus_API `/user/orders`, totus_WEB профиль | 01.10 |
 
 ---
@@ -21,6 +21,7 @@
 | PR | Что | Что нужно от владельца |
 |---|---|---|
 | [totus_WEB #25](https://github.com/tosmedia/totus_WEB/pull/25) | Производительность, этап 1: фото отеля сразу, lazy-картинки, без дубля `/hotels-rooms` (UI не меняется) | `npm run build`, проверка страницы отеля и главной, слияние, `pm2 restart front` |
+| [calling_api_v2 #8](https://github.com/tosmedia/calling_api_v2/pull/8) | Звонок на все устройства пользователя (телефон + сайт / панель), S1/S2/S3/S6 | Squash and merge в `prod`, `npm run check`, `pm2 restart api_calling`, чек-лист в PR |
 | [totus_support_app #2](https://github.com/tosmedia/totus_support_app/pull/2) | Звонки, этап 1: `VoipService.ts` из PR #1 + ранний запрос микрофона (iOS) | `npm run check`, сборка, TestFlight, чек-лист в PR; слияние |
 | [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) | Звонки, этап 1: ранний запрос микрофона (iOS) | Сборка, TestFlight, проверка первого звонка после установки; слияние |
 | [totus_support_app #1](https://github.com/tosmedia/totus_support_app/pull/1) — слит 30.09 без `VoipService.ts` | iOS: ответ из закрытого / фона / экрана блокировки | Файл добавлен в #2 — патч вручную применять не нужно |
@@ -60,7 +61,7 @@
 | D6 | Безопасность: `AUTH_MODE=enforce` не включён | `claude/SECURITY_ENFORCE_MATRIX_RU.md` | Три клиентские правки + решение по гостевому бронированию |
 | D7 | Приложение поддержки: Firebase `club.totus.support`, App ID Apple, сборка | `claude/SUPPORT_APP_STATUS_RU.md` | Владелец |
 | D8 | Хвосты Б.1: удалить TURN-пользователя `test` после релиза приложения, перепубликовать `pkg/*`, webhook-ключ LT, GitHub Advanced Security | `claude/ROADMAP_RU.md`, `claude/SECURITY_AUDIT_SECRETS_RU.md` | Владелец |
-| D9 | Косметика: в totus_ai_v2 `server/llm.ts` escape ` ` в регэкспе стал самим символом NBSP (поведение то же) | totus_ai_v2 #2 | При следующей правке файла вернуть ` ` |
+| D9 | Косметика: в totus_ai_v2 `server/llm.ts` escape ` ` в регэкспе стал самим символом NBSP (поведение то же) | totus_ai_v2 #2 | При следующей правке файла вернуть ` ` |
 | D10 | totus_APP: тот же `VoipService.ts` (исходник порта) — вероятно, та же ошибка ответа из закрытого приложения на iOS и повторная обработка ответа | Выявлено 30.09 при разборе Support App | После проверки фикса в Support App на устройстве перенести в totus_APP отдельным PR (с «добро») |
 
 ---
@@ -72,6 +73,7 @@
 | totus_API | `npm run check` | `node --check app.js` + 13 скриптов `scripts/check-*.js` (auth-core, notify-hub, custom-rooms ×5, operators, yandex-auth, phone, order-docs, home-hero) |
 | totus_ai_v2 | нет (`typecheck:server`, `lint`) | 0 — завести (D2) |
 | totus_support_app | `npm run check` (Node ≥ 22.18) | 2 скрипта, 24 проверки: `check-voip-answer-recovery` (16, проходят только с `VoipService.ts` из #2), `check-mic-permission` (8, ветка `claude/voip-stage1`) |
+| calling_api_v2 | `npm run check` | + `check-multi-device-calls.js` — 17 сценариев на настоящем `index.js` (ветка `claude/calls-multi-device`) |
 | totus_APP | `npm run check` (Node ≥ 22.18) | 1 скрипт, 9 проверок: `check-mic-permission` (ветка `claude/voip-mic-permission`) |
 | totus_WEB | `npm run check` (Node ≥ 22.18) | 1 скрипт, 10 проверок: `scripts/check-perf-stage1.mjs` (в ветке PR #25) |
 | Totus_admin, totus_APP, totus_desktop, calling_v2, calling_api_v2 | не заведены | — |

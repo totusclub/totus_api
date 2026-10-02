@@ -4,8 +4,9 @@
 
 | Этап | Состояние |
 |---|---|
-| 1. A1 + A6 + проверки сервера | В PR: [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14). Ждём сборки, проверки на устройстве и серверных проверок §7 |
-| 2–7 | Не начаты |
+| 1. A1 + A6 + проверки сервера | **Проверено владельцем 02.10**: два звонка соединились на обоих устройствах. PR: [support_app #2](https://github.com/tosmedia/totus_support_app/pull/2), [totus_APP #14](https://github.com/tosmedia/totus_APP/pull/14) |
+| 2. Сервер | Начат по находке владельца («авторизован на сайте — звонок не приходит на телефон»): S1, S2, S3, S6 — [calling_api_v2 #8](https://github.com/tosmedia/calling_api_v2/pull/8), ждём слияния и проверки. Дальше: S4 (state, таймаут, отмена push), S5, P1-2 |
+| 3–7 | Не начаты |
 
 **Что прочитано (через GitHub-коннектор):**
 - `calling_api_v2@prod` b4349fc: `index.js`, `middleware/auth.js`, `lib/*`, `db.js`;
