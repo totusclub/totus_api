@@ -11,7 +11,23 @@ const ALLOWED_CMS_PAGE_SLUGS = new Set([
     'cookie-settings',
     'privacy-policy',
     'terms',
+    // Юридические документы ООО «ТОТУСКЛАБ» (пачка 1, 03.10.2026)
+    'consent',
+    'ads-consent',
+    'recommendations',
+    'requisites',
 ]);
+
+/** Юридические документы — порядок показа в приложении и на сайте */
+const LEGAL_CMS_PAGE_SLUGS = [
+    'terms',
+    'privacy-policy',
+    'consent',
+    'ads-consent',
+    'cookie-settings',
+    'recommendations',
+    'requisites',
+];
 
 function isAllowedCmsPageSlug(slug) {
     return ALLOWED_CMS_PAGE_SLUGS.has(String(slug || '').trim());
@@ -19,5 +35,6 @@ function isAllowedCmsPageSlug(slug) {
 
 module.exports = {
     ALLOWED_CMS_PAGE_SLUGS,
+    LEGAL_CMS_PAGE_SLUGS,
     isAllowedCmsPageSlug,
 };

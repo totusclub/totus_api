@@ -5,7 +5,7 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js",
+    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js && node scripts/check-cms-legal-pages.js",
     "check:yandex-env": "node scripts/check-yandex-env.js",
     "check:order-docs": "node scripts/check-order-docs.js",
     "check:home-hero": "node scripts/check-home-hero.js",
