@@ -16,6 +16,12 @@ const ALLOWED_CMS_PAGE_SLUGS = new Set([
     'ads-consent',
     'recommendations',
     'requisites',
+    // Юридические документы ООО «ТОТУСКЛАБ» (пачка 2, туры и размещение)
+    'tour-offer',
+    'hotel-booking',
+    'cancellation',
+    'tourist-memo',
+    'payment',
 ]);
 
 /** Юридические документы — порядок показа в приложении и на сайте */
@@ -26,6 +32,11 @@ const LEGAL_CMS_PAGE_SLUGS = [
     'ads-consent',
     'cookie-settings',
     'recommendations',
+    'tour-offer',
+    'hotel-booking',
+    'cancellation',
+    'tourist-memo',
+    'payment',
     'requisites',
 ];
 
