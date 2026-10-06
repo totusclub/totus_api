@@ -575,6 +575,63 @@ async function persistCreatedOrderDocuments(orderId, orderData, eventReference =
   return { saved, orderData: updated };
 }
 
+/**
+ * Documents of many orders in ONE query (GET /user/orders used to run one query per order).
+ * Map order_id → rows in the same order as getOrderDocuments (created_at DESC).
+ */
+async function getOrderDocumentsByOrderIds(orderIds) {
+  const ids = [...new Set(
+    (orderIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id))
+  )];
+  const byOrderId = new Map(ids.map((id) => [id, []]));
+  if (!ids.length) return byOrderId;
+
+  const [rows] = await db.query(
+    `SELECT id, order_id, title, source_url, file_path, public_url, event_reference, created_at
+     FROM order_documents
+     WHERE order_id IN (?)
+     ORDER BY created_at DESC`,
+    [ids]
+  );
+  for (const row of rows) {
+    const list = byOrderId.get(Number(row.order_id));
+    if (list) list.push(row);
+  }
+  return byOrderId;
+}
+
+function parseOrderPackage(orderRow) {
+  try {
+    return JSON.parse(orderRow.package || '{}');
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Same result as Promise.all(rows.map(prepareOrderRowForClient)), but documents for all
+ * orders are read with one query instead of one per order.
+ */
+async function prepareOrderRowsForClient(orderRows) {
+  const rows = Array.isArray(orderRows) ? orderRows : [];
+  const documentsByOrderId = await getOrderDocumentsByOrderIds(
+    rows.filter(Boolean).map((row) => row.order_id)
+  );
+
+  return rows.map((orderRow) => {
+    if (!orderRow) return orderRow;
+    const orderId = Number(orderRow.order_id);
+    const parsedPackage = parseOrderPackage(orderRow);
+    const sanitizedPackage = Number.isFinite(orderId)
+      ? applyLocalDocumentUrlsToPackage(orderId, parsedPackage, documentsByOrderId.get(orderId) || [])
+      : parsedPackage;
+    return {
+      ...orderRow,
+      package: sanitizedPackage,
+    };
+  });
+}
+
 async function getOrderDocuments(orderId) {
   const [rows] = await db.query(
     `SELECT id, order_id, title, source_url, file_path, public_url, event_reference, created_at
@@ -595,6 +652,7 @@ module.exports = {
   persistCreatedOrderDocuments,
   mergeLocalAttachments,
   getOrderDocuments,
+  getOrderDocumentsByOrderIds,
   countOrderDocuments,
   findExistingDocument,
   filterNewDownloadables,
@@ -602,4 +660,5 @@ module.exports = {
   sanitizeOrderPackageForClient,
   sanitizeLtApiPayloadForClient,
   prepareOrderRowForClient,
+  prepareOrderRowsForClient,
 };

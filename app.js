@@ -1211,16 +1211,14 @@ app.get('/user/orders', requireAuth(['user']), async (req, res) => {
             return res.status(400).json({ error: 'Missing user_id' });
         }
         const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [userId]);
-        const { prepareOrderRowForClient } = require('./utils/orderDocuments');
+        const { prepareOrderRowsForClient } = require('./utils/orderDocuments');
         const { getLatestLtEventsByOrderIds } = require('./utils/clientOrders');
 
-        const parsedOrders = await Promise.all(
-            orders.map((order) => prepareOrderRowForClient(order))
-        );
-
-        const latestByOrderId = await getLatestLtEventsByOrderIds(
-            parsedOrders.map((order) => order.order_id)
-        );
+        // Documents of all orders — one query (was one query per order); response unchanged.
+        const [parsedOrders, latestByOrderId] = await Promise.all([
+            prepareOrderRowsForClient(orders),
+            getLatestLtEventsByOrderIds(orders.map((order) => order.order_id)),
+        ]);
 
         res.json(
             parsedOrders.map((order) => ({
