@@ -1210,15 +1210,40 @@ app.get('/user/orders', requireAuth(['user']), async (req, res) => {
             if (res.headersSent) return;
             return res.status(400).json({ error: 'Missing user_id' });
         }
+        const listView = String(req.query.view || '') === 'list';
+        const startedAt = Date.now();
+        let builtAt = null;
+        let orderCount = 0;
+        let sqlMs = 0;
+        // Время до отправки (вместе с custom rooms, подписью ссылок и JSON) и размер ответа — в лог.
+        res.on('finish', () => {
+            const sent = Date.now() - startedAt;
+            const bytes = res.getHeader('content-length') || '?';
+            console.log(`[ORDERS] ${listView ? 'list' : 'full'} user=${userId} orders=${orderCount} sql=${sqlMs}ms build=${builtAt ? builtAt - startedAt : '?'}ms sent=${sent}ms bytes=${bytes}`);
+        });
         const [orders] = await db.query('SELECT * FROM orders WHERE user_id = ?', [userId]);
+        const queriedAt = Date.now();
+        orderCount = orders.length;
+        sqlMs = queriedAt - startedAt;
         const { prepareOrderRowsForClient } = require('./utils/orderDocuments');
         const { getLatestLtEventsByOrderIds } = require('./utils/clientOrders');
+
+        if (listView) {
+            // ?view=list (приложение, экран «Заказы»): только поля карточки, без документов и полного
+            // пакета LT — килобайты вместо мегабайт (utils/orderListView.js). Подробности — GET /orders.
+            const { toListItem } = require('./utils/orderListView');
+            const latestByOrderId = await getLatestLtEventsByOrderIds(orders.map((order) => order.order_id));
+            const items = orders.map((row) => toListItem(row, latestByOrderId.get(Number(row.order_id))));
+            builtAt = Date.now();
+            return res.json(items);
+        }
 
         // Documents of all orders — one query (was one query per order); response unchanged.
         const [parsedOrders, latestByOrderId] = await Promise.all([
             prepareOrderRowsForClient(orders),
             getLatestLtEventsByOrderIds(orders.map((order) => order.order_id)),
         ]);
+        builtAt = Date.now();
 
         res.json(
             parsedOrders.map((order) => ({
