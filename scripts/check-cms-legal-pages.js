@@ -1,6 +1,6 @@
 /**
  * Юридические документы в CMS (03.10.2026).
- * Поломка: новые документы (согласие на ПДн, согласие на рекламу, рекомендательные
+ * Поломка: новые документы (согласие на обработку персональных данных, согласие на рекламу, рекомендательные
  * технологии, реквизиты) нельзя было сохранить в админке — API отвечал 403
  * «This page cannot be edited via CMS», а публичный /api/pages/slug/:slug — 404.
  * Проверка грузит настоящий controllers/pages.controller.js с поддельной БД.
@@ -65,19 +65,32 @@ async function check(name, fn) {
     const NEW = ['consent', 'ads-consent', 'recommendations', 'requisites'];
     const OLD = ['about-us', 'help-faq', 'partners', 'advertise', 'airlines', 'low-fare-tips',
         'badges-certificates', 'security', 'cookie-settings', 'privacy-policy', 'terms'];
+    // Пачка 2 (туры и размещение): slug → полное название документа
+    const PACK2 = {
+        'tour-offer': 'Оферта о заключении договора о реализации туристского продукта',
+        'hotel-booking': 'Условия бронирования размещения',
+        'cancellation': 'Изменение, отмена и возврат',
+        'tourist-memo': 'Памятка туристу',
+        'payment': 'Оплата и возврат денег',
+    };
+    const PACK2_SLUGS = Object.keys(PACK2);
 
     await check('новые юридические страницы разрешены', () => {
         NEW.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
     });
+    await check('страницы пачки 2 (туры и размещение) разрешены', () => {
+        PACK2_SLUGS.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
+        PACK2_SLUGS.forEach((s) => assert.ok(LEGAL_CMS_PAGE_SLUGS.includes(s), s));
+    });
     await check('прежние 11 страниц по-прежнему разрешены', () => {
         OLD.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
-        assert.strictEqual(ALLOWED_CMS_PAGE_SLUGS.size, OLD.length + NEW.length);
+        assert.strictEqual(ALLOWED_CMS_PAGE_SLUGS.size, OLD.length + NEW.length + PACK2_SLUGS.length);
     });
     await check('посторонний slug запрещён', () => {
-        ['admin', 'tour-offer', 'arlekino-booking', '', ' '].forEach((s) => assert.ok(!isAllowedCmsPageSlug(s), JSON.stringify(s)));
+        ['admin', 'unknown-page', 'tour-offer-old', '', ' '].forEach((s) => assert.ok(!isAllowedCmsPageSlug(s), JSON.stringify(s)));
     });
-    await check('список юридических документов — 7, все разрешены', () => {
-        assert.strictEqual(LEGAL_CMS_PAGE_SLUGS.length, 7);
+    await check('список юридических документов — 12, все разрешены', () => {
+        assert.strictEqual(LEGAL_CMS_PAGE_SLUGS.length, 12);
         LEGAL_CMS_PAGE_SLUGS.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
     });
     for (const slug of NEW) {
@@ -98,12 +111,29 @@ async function check(name, fn) {
             assert.strictEqual(r.body.section, 'legal');
         });
     }
+    for (const slug of PACK2_SLUGS) {
+        const name = PACK2[slug];
+        await check(`админка сохраняет «${name}» (${slug}), публичный API отдаёт текст`, async () => {
+            const r1 = res();
+            await ctrl.savePage({ body: { slug, name, section: 'legal', content: '<p>v1</p>' } }, r1);
+            assert.strictEqual(r1.statusCode, 201, JSON.stringify(r1.body));
+            const r2 = res();
+            await ctrl.savePage({ body: { slug, name, section: 'legal', content: '<p>v2</p>' } }, r2);
+            assert.strictEqual(r2.statusCode, 200);
+            const r3 = res();
+            await ctrl.getPageBySlug({ params: { slug } }, r3);
+            assert.strictEqual(r3.statusCode, 200);
+            assert.strictEqual(r3.body.content, '<p>v2</p>');
+            assert.strictEqual(r3.body.name, name);
+            assert.strictEqual(r3.body.section, 'legal');
+        });
+    }
     await check('посторонний slug: сохранение 403, чтение 404', async () => {
         const r1 = res();
-        await ctrl.savePage({ body: { slug: 'tour-offer', name: 'x', content: 'x' } }, r1);
+        await ctrl.savePage({ body: { slug: 'unknown-page', name: 'x', content: 'x' } }, r1);
         assert.strictEqual(r1.statusCode, 403);
         const r2 = res();
-        await ctrl.getPageBySlug({ params: { slug: 'tour-offer' } }, r2);
+        await ctrl.getPageBySlug({ params: { slug: 'unknown-page' } }, r2);
         assert.strictEqual(r2.statusCode, 404);
     });
     console.log(`check-cms-legal-pages: ${passed} passed`);
