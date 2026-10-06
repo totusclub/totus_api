@@ -10,7 +10,8 @@
  * Подробности заказа приложение по-прежнему берёт из GET /orders?order_id (полный пакет).
  *
  * Без параметра view ответ /user/orders прежний (сайт, desktop, старые версии приложения).
- * Поля — по коду карточки totus_APP (OrderListItem, ordersUtils, totusBooking):
+ * Поля — по коду карточек totus_APP (OrderListItem, ordersUtils, totusBooking) и totus_WEB
+ * (profile/orderItem, OrderSbpPayButton, orderDisplay, orderPayment, packagePrice):
  *   pkg = package.package || package; lt = package;
  *   hotel.{name,city,country}, dates_info, departure.{name_ru,name_en,name}, nights_count,
  *   price / full_price, created_at, state, tourists[].{name,surname}, status_for_client,
@@ -20,7 +21,9 @@
 const PACKAGE_KEYS = [
     'id', 'order_id', 'state', 'status', 'status_for_client', 'is_paid',
     'full_price', 'remaining_amount', 'price', 'currency',
-    'created_at', 'nights_count', 'nights', 'dates_info',
+    // сайт: сумма СБП в карточке (orderPayment.getOrderPayAmount) и назначение платежа
+    'net_price', 'fuel_charge', 'predicted_surcharge', '_pay_amount', 'description_for_client',
+    'created_at', 'createdAt', 'c_date', 'nights_count', 'nights', 'dates_info',
     'pansion_description', 'room_type',
     'totus_booking', '_totus_booking',
 ];

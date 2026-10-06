@@ -84,6 +84,15 @@ check('все поля карточки на месте (hotel, даты, выл
     assert.strictEqual(item.list_view, true);
 });
 
+check('сайт: поля суммы и назначения платежа СБП на месте', () => {
+    const pkg = { price: 100, full_price: 120, net_price: 90, fuel_charge: 15, predicted_surcharge: 5, _pay_amount: 120, description_for_client: 'Тур в Турцию', c_date: '2026-09-01', createdAt: '2026-09-01', package: { price: 100, net_price: 90, fuel_charge: 15, predicted_surcharge: 5 } };
+    const slim = slimPackage(pkg);
+    for (const k of ['net_price', 'fuel_charge', 'predicted_surcharge', '_pay_amount', 'description_for_client', 'c_date', 'createdAt']) {
+        assert.strictEqual(slim[k], pkg[k], k);
+    }
+    assert.deepStrictEqual(slim.package, { price: 100, net_price: 90, fuel_charge: 15, predicted_surcharge: 5 });
+});
+
 check('тяжёлое и лишнее не уходит: описание, фото, перелёты, вложения, контакты, паспорта, токен LT', () => {
     const item = toListItem(row, lastEvent);
     const json = JSON.stringify(item);
