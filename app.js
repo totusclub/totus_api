@@ -497,6 +497,8 @@ app.get('/get-hotel-offers', async (req, res) => {
 
 
 
+const { toFlightsListView } = require('./utils/flightsListView');
+
 app.post('/packages/flights', async (req, res) => {
     try {
         const raw = req.body && typeof req.body === 'object' ? { ...req.body } : {};
@@ -553,6 +555,7 @@ app.post('/packages/flights', async (req, res) => {
             data[key] = value;
         }
 
+        const startedAt = Date.now();
         const response = await ltRequest({
             method: 'post',
             path: '/packages/flights',
@@ -561,6 +564,14 @@ app.post('/packages/flights', async (req, res) => {
             retries: 0,
             timeout: 60000,
         });
+        // ?view=list — лёгкий ответ для страницы билетов сайта (utils/flightsListView.js).
+        // Без параметра — прежний полный ответ LT (приложение, бронирование, оформление).
+        if (String(req.query.view || '') === 'list') {
+            const body = toFlightsListView(response.data);
+            const flightsCount = Array.isArray(body?.flights) ? body.flights.length : 0;
+            console.log(`[FLIGHTS] package_id=${data.package_id} view=list flights=${flightsCount} lt_ms=${Date.now() - startedAt}`);
+            return res.json(body);
+        }
         res.json(response.data);
     } catch (error) {
         logLtError('Error flights:', error);
