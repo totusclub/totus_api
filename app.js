@@ -33,6 +33,10 @@ const { corsMiddleware, helmetMiddleware, allowedOrigins } = require('./lib/secu
 const app = express();
 // За nginx — один хоп; нужно для корректного req.ip (rate-limit, auth-логи).
 app.set('trust proxy', 1);
+// Сжатие ответов (JSON, SVG, CSS…): пакет `compression`. Если не установлен — работаем без него.
+// Картинки PNG/JPEG/WebP не сжимаются (фильтр compression по Content-Type).
+const { optionalCompression } = require('./lib/optionalCompression');
+app.use(optionalCompression());
 app.use(helmetMiddleware());
 app.use(corsMiddleware());
 app.use(express.json());
@@ -42,9 +46,24 @@ app.use(express.json());
 // обязаны стоять ДО express.static('/uploads').
 app.use(require('./middleware/signOrderDocLinks')());
 app.use('/uploads/orders', require('./middleware/orderDocumentsAccess')());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use('/upload/content', express.static(path.join(__dirname, 'upload/content')));
-app.use('/upload/home', express.static(path.join(__dirname, 'upload/home')));
+// Статика: WebP-копия вместо PNG/JPEG, если браузер её принимает (middleware/webpNegotiation.js),
+// и Cache-Control по имени файла (lib/staticCache.js; /uploads/orders — всегда private, no-store).
+const { staticOptions } = require('./lib/staticCache');
+const { webpNegotiation } = require('./middleware/webpNegotiation');
+const { optimizeUploadedImages } = require('./lib/imageOptimize');
+const { publicCache } = require('./lib/publicCache');
+for (const [mount, dir] of [
+    ['/uploads', 'uploads'],
+    ['/upload/content', 'upload/content'],
+    ['/upload/home', 'upload/home'],
+]) {
+    const root = path.join(__dirname, dir);
+    app.use(mount, webpNegotiation(root), express.static(root, staticOptions(root)));
+}
+// Новые картинки из админки → WebP-копия в фоне после ответа.
+app.use('/api/admin', optimizeUploadedImages());
+// Короткий публичный кеш справочников и контента главной (lib/publicCache.js).
+app.use(publicCache());
 app.use(require('./middleware/customRooms'));
 app.use('/api/admin/rooms', require('./routes/customRooms.routes'));
 app.use('/api/admin/operators', require('./routes/operators.routes'));
@@ -66,9 +85,12 @@ const LT_API_TOKEN = env('LT_API_TOKEN') || env('LT_PARTNER_API_KEY') || null; /
 // Partner token LT (с учётом алиаса LT_PARTNER_API_KEY); бросает понятную ошибку, если не задан.
 const ltToken = () => LT_API_TOKEN || requireEnv('LT_API_TOKEN');
 
-// Short in-memory cache so intermittent LT 5xx don't blank the search form.
-let departuresCache = { at: 0, query: null, data: null };
-const DEPARTURES_CACHE_MS = 5 * 60 * 1000;
+// Города вылета меняются редко: ответ LT держим в памяти (по набору параметров).
+// Свежий (DEPARTURES_FRESH_MS) отдаём сразу, без запроса в LT — раньше каждый заход на главную
+// ждал Level.Travel. При ошибке LT отдаём сохранённый ответ не старше DEPARTURES_CACHE_MS.
+const departuresCache = new Map(); // query → { at, data }
+const DEPARTURES_FRESH_MS = 10 * 60 * 1000;
+const DEPARTURES_CACHE_MS = 6 * 60 * 60 * 1000;
 
 // Express turns duplicate query keys into arrays (?x=1&x=1 → {x:['1','1']}).
 // Level Travel rejects that shape (500), so keep a single scalar value.
@@ -82,6 +104,11 @@ function normalizeQueryParams(query = {}) {
 
 app.get('/references/departures', async (req, res) => {
     const params = normalizeQueryParams(req.query);
+    const cacheKey = JSON.stringify(params);
+    const cached = departuresCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < DEPARTURES_FRESH_MS) {
+        return res.json(cached.data);
+    }
     try {
         const response = await ltRequest({
             method: 'get',
@@ -91,20 +118,16 @@ app.get('/references/departures', async (req, res) => {
             retries: 1,
             timeout: 20000,
         });
-        departuresCache = {
-            at: Date.now(),
-            query: JSON.stringify(params),
-            data: response.data,
-        };
+        if (departuresCache.size > 50) departuresCache.clear();
+        departuresCache.set(cacheKey, { at: Date.now(), data: response.data });
         res.json(response.data);
     } catch (error) {
         logLtError('Error departures:', error, { query: params });
-        const cacheFresh =
-            departuresCache.data &&
-            Date.now() - departuresCache.at < DEPARTURES_CACHE_MS;
-        if (cacheFresh) {
+        const stale = departuresCache.get(cacheKey);
+        if (stale && stale.data && Date.now() - stale.at < DEPARTURES_CACHE_MS) {
             console.warn('Error departures: serving cached response');
-            return res.json(departuresCache.data);
+            res.set('Cache-Control', 'no-store');
+            return res.json(stale.data);
         }
         return sendLtAxiosError(res, error, 'Failed departures');
     }

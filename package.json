@@ -5,7 +5,7 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js && node scripts/check-cms-legal-pages.js && node scripts/check-user-orders-batch.js && node scripts/check-orders-list-view.js",
+    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-yandex-auth.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js && node scripts/check-cms-legal-pages.js && node scripts/check-user-orders-batch.js && node scripts/check-orders-list-view.js && node scripts/check-server-perf.js",
     "check:yandex-env": "node scripts/check-yandex-env.js",
     "check:order-docs": "node scripts/check-order-docs.js",
     "check:home-hero": "node scripts/check-home-hero.js",
@@ -14,6 +14,7 @@
     "migrate:operators": "node scripts/run-operators-migration.js",
     "migrate:yandex-auth": "node scripts/run-yandex-auth-migration.js",
     "migrate:home-hero-images": "node scripts/migrate-home-hero-images.js",
+    "optimize:images": "node scripts/optimize-images.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -24,6 +25,7 @@
     "axios": "^1.9.0",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
@@ -35,5 +37,8 @@
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.3",
     "qs": "^6.15.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.4"
   }
 }
