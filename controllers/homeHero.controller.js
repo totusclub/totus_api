@@ -9,12 +9,19 @@
  * Публичный GET /api/home-hero при каждом запросе случайно выбирает ОДНО изображение
  * из списка и отдаёт его в поле `image` (формат ответа прежний — сайт менять не нужно).
  * Одно изображение — всегда оно; нет изображений — `image: ''`.
+ *
+ * `image_mobile` — та же картинка, обрезанная по центру для телефона (`<файл>.m.webp`,
+ * lib/heroMobile.js, ~50 КБ вместо ~300 КБ). Создаётся в фоне после загрузки и при первом
+ * показе; пока её нет — `''`, и сайт показывает `image`, как раньше.
  */
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const db = require('../db');
 const { getPublicApiBase } = require('../utils/publicApiBase');
+const { createHeroMobileIndex, MOBILE_SUFFIX } = require('../lib/heroMobile');
+
+let heroMobile = createHeroMobileIndex();
 
 const DEFAULT_TITLE = 'Путешествия начинаются здесь';
 const UPLOAD_PREFIX = '/uploads/hero/';
@@ -28,13 +35,17 @@ function toAbsoluteImage(req, image) {
 function deleteImageFile(imagePath) {
     if (!imagePath || /^https?:\/\//i.test(imagePath)) return;
     const fullPath = path.join(__dirname, '..', imagePath);
-    if (fs.existsSync(fullPath)) {
-        try {
-            fs.unlinkSync(fullPath);
-        } catch (e) {
-            /* ignore */
+    // вместе с оригиналом — его копии: WebP (lib/imageOptimize.js) и мобильная (lib/heroMobile.js)
+    for (const file of [fullPath, `${fullPath}.webp`, `${fullPath}${MOBILE_SUFFIX}`]) {
+        if (fs.existsSync(file)) {
+            try {
+                fs.unlinkSync(file);
+            } catch (e) {
+                /* ignore */
+            }
         }
     }
+    heroMobile.forget(imagePath);
 }
 
 /** Файлы, загруженные multer (single / array / fields), в один список. */
@@ -49,6 +60,11 @@ function uploadedFiles(req) {
 
 function fileToPath(file) {
     return `${UPLOAD_PREFIX}${file.filename}`;
+}
+
+/** Мобильные версии новых картинок — в фоне, ответ админке не ждёт. */
+function scheduleMobile(files) {
+    for (const file of files) heroMobile.ensure(fileToPath(file)).catch(() => {});
 }
 
 /** Если запись в БД не удалась — загруженные файлы не должны остаться мусором на диске. */
@@ -161,6 +177,7 @@ exports.get = async (req, res) => {
     try {
         const [hero, images] = await Promise.all([getHeroRow(), listImageRows()]);
         const picked = pickRandom(images);
+        const mobileRel = picked ? await heroMobile.lookup(picked.image) : '';
         // Каждый заход на главную — новый выбор: ответ не кэшируется ни браузером, ни прокси.
         res.set('Cache-Control', 'no-store, max-age=0');
         res.status(200).json({
@@ -168,6 +185,7 @@ exports.get = async (req, res) => {
                 id: hero.id,
                 title: hero.title || DEFAULT_TITLE,
                 image: picked ? toAbsoluteImage(req, picked.image) : '',
+                image_mobile: mobileRel ? toAbsoluteImage(req, mobileRel) : '',
                 image_id: picked ? picked.id : null,
                 images_count: images.length,
                 updated_at: hero.updated_at,
@@ -217,7 +235,10 @@ exports.update = async (req, res) => {
         } else {
             await db.query('UPDATE home_hero SET title = ? WHERE id = 1', [title]);
         }
-        if (files.length) await insertImages(files);
+        if (files.length) {
+            await insertImages(files);
+            scheduleMobile(files);
+        }
 
         res.status(200).json({ message: 'Hero-блок сохранён.', data: await adminPayload(req) });
     } catch (err) {
@@ -247,6 +268,7 @@ exports.addImages = async (req, res) => {
     try {
         await ensureImagesTable();
         const ids = await insertImages(files);
+        scheduleMobile(files);
         const rows = await listImageRows();
         const all = rows.map((row) => mapImage(req, row));
         res.status(201).json({
@@ -298,6 +320,7 @@ exports.updateImage = async (req, res) => {
 
         const oldImage = rows[0].image;
         if (newImage && oldImage && oldImage !== newImage) deleteImageFile(oldImage);
+        if (newImage) scheduleMobile(files.slice(0, 1));
 
         const [updated] = await db.query('SELECT * FROM home_hero_images WHERE id = ?', [id]);
         res.status(200).json({ message: 'Изображение заменено.', data: mapImage(req, updated[0]) });
@@ -330,4 +353,11 @@ exports.deleteImage = async (req, res) => {
 
 // Для скрипта миграции и проверок.
 exports.ensureImagesTable = ensureImagesTable;
-exports._internal = { pickRandom, uploadedFiles };
+exports._internal = {
+    pickRandom,
+    uploadedFiles,
+    /** для проверок: подменить состояние мобильных версий */
+    setHeroMobile(index) {
+        heroMobile = index;
+    },
+};
