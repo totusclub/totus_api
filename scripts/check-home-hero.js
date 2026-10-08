@@ -103,7 +103,7 @@ fs.unlinkSync = (p) => {
 };
 
 const controller = require('../controllers/homeHero.controller');
-const { pickRandom } = controller._internal;
+const { pickRandom, setHeroMobile } = controller._internal;
 
 /* ── Поддельные req/res ────────────────────────────────────────────────── */
 
@@ -153,6 +153,7 @@ const BASE = 'https://api.totus.club';
     assert.strictEqual(res.body.data.images_count, 1);
     assert.strictEqual(state.hero.image, '', 'старая колонка очищена');
     assert.match(res.headers['cache-control'], /no-store/, 'ответ не кэшируется');
+    assert.strictEqual(res.body.data.image_mobile, '', 'мобильной версии на диске нет — пусто, сайт берёт image');
 
     // 2. Добавление нескольких изображений за раз
     res = await call(controller.addImages, { files: { images: [f('a.jpg'), f('b.jpg'), f('c.webp')] } });
@@ -195,6 +196,7 @@ const BASE = 'https://api.totus.club';
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.body.data.image, `${BASE}/uploads/hero/b2.jpg`);
     assert.ok(deleted.includes('b.jpg'), 'старый файл удалён');
+    assert.ok(deleted.includes('b.jpg.webp') && deleted.includes('b.jpg.m.webp'), 'и его WebP- и мобильная копии');
     assert.strictEqual(state.images.length, 5, 'количество не изменилось');
 
     // замена несуществующего — 404, загруженный файл удалён
@@ -249,6 +251,25 @@ const BASE = 'https://api.totus.club';
         const r = await call(controller.get);
         assert.strictEqual(r.body.data.image, `${BASE}/uploads/hero/only.jpg`);
     }
+
+    // 11. Мобильная версия есть — отдаётся рядом с image абсолютной ссылкой
+    const asked = [];
+    setHeroMobile({
+        lookup: async (rel) => (asked.push(rel), `${rel}.m.webp`),
+        ensure: async () => true,
+        forget() {},
+    });
+    res = await call(controller.get);
+    assert.strictEqual(res.body.data.image, `${BASE}/uploads/hero/only.jpg`);
+    assert.strictEqual(res.body.data.image_mobile, `${BASE}/uploads/hero/only.jpg.m.webp`);
+    assert.deepStrictEqual(asked, ['/uploads/hero/only.jpg']);
+    // загрузка новой картинки запускает создание мобильной версии
+    const ensured = [];
+    setHeroMobile({ lookup: async () => '', ensure: async (rel) => ensured.push(rel), forget() {} });
+    await call(controller.addImages, { files: { images: [f('new1.jpg'), f('new2.png')] } });
+    assert.deepStrictEqual(ensured, ['/uploads/hero/new1.jpg', '/uploads/hero/new2.png']);
+    res = await call(controller.get);
+    assert.strictEqual(res.body.data.image_mobile, '', 'нет версии — пустая строка');
 
     fs.existsSync = origExists;
     fs.unlinkSync = origUnlink;
