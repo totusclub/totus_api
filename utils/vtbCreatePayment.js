@@ -118,52 +118,57 @@ async function createVtbPaymentForOrder({
         'Content-Type': 'application/json',
     };
 
-    const { purpose, subscriptionPurpose } = buildVtbPaymentPurpose({
+    const { purpose } = buildVtbPaymentPurpose({
         orderId,
         orderName,
         paymentPurpose: paymentPurpose || purposeText,
         package: orderPackage,
     });
 
+    const checkoutUrl = buildCheckoutUrl(cleanOrderId);
     const response = await axios.post(
-        'https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics',
+        'https://gw.api.vtb.ru/openapi/smb/efcp/e-commerce/v1/orders',
         {
-            amount: normalizedAmount.value,
-            currency: 'RUB',
-            qrTtl: String(paymentMinutes),
-            purpose,
-            subscriptionPurpose,
-            redirectUrl: 'https://totus.club',
+            orderId: cleanOrderId,
+            orderName: String(orderName || purpose || `ORDER${cleanOrderId}`).slice(0, 140),
+            amount: normalizedAmount,
+            returnUrl: checkoutUrl,
+            redirectUrl: checkoutUrl,
         },
         { headers, ...vtbAxiosConfig }
     );
 
     const vtbBody = response.data || {};
-    const qrData = vtbBody.data || {};
-    const qrcId = qrData.qrcId || null;
-    const sbpPayload = qrData.payload || null;
+    const order = vtbBody.object || {};
+    const payUrl = order.payUrl || null;
+    const orderCode = order.orderCode || null;
+    const preparedSbp = (Array.isArray(order.preparedPayments) ? order.preparedPayments : [])
+        .find((item) => String(item?.type || '').toLowerCase() === 'sbp');
+    const qrcId = preparedSbp?.object?.qrcId || null;
+    const minutes = minutesUntil(order.expire, paymentMinutes);
+    const lookupCode = orderCode || qrcId;
 
-    if (qrcId && cleanOrderId) {
+    if (lookupCode && cleanOrderId) {
         await db.query(
             'UPDATE orders SET pay_status = ?, transaction_code = ? WHERE order_id = ?',
-            ['CREATED', qrcId, cleanOrderId]
+            ['CREATED', lookupCode, cleanOrderId]
         );
     }
 
-    if (sbpPayload && cleanOrderId) {
+    if (payUrl && cleanOrderId) {
         await savePaymentToPackage(cleanOrderId, {
-            payUrl: sbpPayload,
-            qrcId,
+            payUrl,
+            qrcId: lookupCode,
             amount: normalizedAmount.value,
-            paymentMinutes,
+            paymentMinutes: minutes,
         });
     }
 
-    if (sendEmail && sbpPayload && orderRow) {
+    if (sendEmail && payUrl && orderRow) {
         sendOrderCreatedEmail(cleanOrderId, orderRow, {
-            payUrl: sbpPayload,
+            payUrl,
             amount: normalizedAmount.value,
-            paymentMinutes,
+            paymentMinutes: minutes,
         }).catch((err) => {
             logCallbackError(LOG, 'EMAIL', 'Payment email failed', {
                 order_id: cleanOrderId,
@@ -174,23 +179,33 @@ async function createVtbPaymentForOrder({
 
     logCallback(LOG, 'OK', 'VTB payment created', {
         order_id: cleanOrderId,
+        orderCode,
         qrcId,
-        has_pay_url: Boolean(sbpPayload),
-        email_scheduled: Boolean(sendEmail && sbpPayload && orderRow),
+        has_pay_url: Boolean(payUrl),
+        email_scheduled: Boolean(sendEmail && payUrl && orderRow),
     });
 
     return {
         ...vtbBody,
         reused: false,
-        qrcId,
-        payload: sbpPayload,
-        payUrl: sbpPayload,
-        checkoutUrl: buildCheckoutUrl(cleanOrderId),
+        qrcId: lookupCode,
+        orderCode,
+        payload: payUrl,
+        payUrl,
+        checkoutUrl,
         object: {
-            payUrl: sbpPayload,
-            qrcId,
+            payUrl,
+            qrcId: lookupCode,
+            orderCode,
         },
     };
+}
+
+function minutesUntil(expire, fallback) {
+    const ts = Date.parse(expire);
+    if (!Number.isFinite(ts)) return fallback;
+    const minutes = Math.round((ts - Date.now()) / 60000);
+    return minutes > 0 ? minutes : fallback;
 }
 
 module.exports = {

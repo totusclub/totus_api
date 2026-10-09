@@ -421,6 +421,7 @@ assert.strictEqual(flow.synthesizePackageStep({ ...map, snapshot: null }), null,
 assert.strictEqual(vtbCheck.resolveVtbPayStatus({ state: 'ACWP' }), 'RECONCILED');
 assert.strictEqual(vtbCheck.resolveVtbPayStatus({ data: { status: { value: 'RECONCILED' } } }), 'RECONCILED');
 assert.strictEqual(vtbCheck.resolveVtbPayStatus({ status: { value: 'IN_PROGRESS' } }), 'IN_PROGRESS');
+assert.strictEqual(vtbCheck.resolveVtbPayStatus({ status: { value: 'PAID' } }), 'RECONCILED');
 assert.strictEqual(vtbCheck.resolveVtbPayStatus({}), 'PENDING');
 
 // serialize → totus_booking (§3)

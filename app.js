@@ -1,11 +1,7 @@
 require('dotenv').config();
 require('dotenv').config({ path: '.env.local', override: true });
 const express = require('express');
-const https = require('https');
 const axios = require('axios');
-
-const vtbHttpsAgent = new https.Agent({ rejectUnauthorized: false });
-const vtbAxiosConfig = { httpsAgent: vtbHttpsAgent };
 const cors = require('cors');
 const authRoutes = require('./routes/auth.routes');
 const adminAuthRoutes = require('./routes/authRoutes');
@@ -614,25 +610,6 @@ app.post('/vtb/create-order', async (req, res) => {
 });
 
 
-
-const generationBankToken = async ()=>{
-    try {
-        const params = new URLSearchParams();
-        params.append("grant_type", "client_credentials");
-        params.append("client_id", requireEnv('VTB_CLIENT_ID'));
-        params.append("client_secret", requireEnv('VTB_CLIENT_SECRET'));
-        const response = await axios.post(
-            "https://open.api.vtb.ru:443/passport/oauth2/token",
-            params,
-            vtbAxiosConfig
-        );
-        console.log("VTB Token Response:-----", response.data);
-        return response.data
-    } catch (error) {
-        console.log("VTB Token Error:", error.message);
-        return error
-    }
-}
 
 app.post('/create-package', requireAuth(['user']), async (req, res) => {
     try {
@@ -1294,19 +1271,10 @@ app.get('/user/orders', requireAuth(['user']), async (req, res) => {
 
 app.get('/home/data', homeContentController.getHomeData);
 
-function isVtbSbpPaid(info) {
-    const state = String(info?.state || info?.data?.state || "").toUpperCase();
-    if (state === "ACWP" || state === "OK") return true;
-    const statusVal = info?.status?.value || info?.data?.status?.value;
-    return statusVal === "RECONCILED";
-}
-
-function resolveVtbPayStatus(info) {
-    if (isVtbSbpPaid(info)) return "RECONCILED";
-    const state = info?.state || info?.data?.state;
-    if (state) return String(state).toUpperCase();
-    const statusVal = info?.status?.value || info?.data?.status?.value;
-    return statusVal || "PENDING";
+function numericOrderId(value) {
+    if (value == null || value === '') return null;
+    const cleaned = String(value).replace(/^ORDER/i, '');
+    return /^\d+$/.test(cleaned) ? cleaned : null;
 }
 
 app.post('/check_pay', async (req, res) => {
@@ -1339,7 +1307,7 @@ app.post('/check_pay', async (req, res) => {
             }
         }
 
-        if (!qrcId) {
+        if (!qrcId && !/^\d+$/.test(clean_order_id || "")) {
             return res.status(200).json({
                 status: "error",
                 message: "Missing required 'qrcId' (or orderId with saved QR)",
@@ -1350,50 +1318,40 @@ app.post('/check_pay', async (req, res) => {
             });
         }
 
-        const tokenData = await generationBankToken();
-        if (!tokenData?.access_token) {
-            return res.status(200).json({
-                status: "error",
-                message: "Failed to obtain VTB access token",
-                notify_status: null,
-                notify_result: null,
-                notify_data: null,
-                notify_error: null,
-            });
+        const { checkSbpPayment } = require("./lib/customRooms/vtbCheck");
+        let info;
+        try {
+            info = await checkSbpPayment(qrcId, clean_order_id);
+        } catch (e) {
+            if (e.reason === "token_failed") {
+                return res.status(200).json({
+                    status: "error",
+                    message: "Failed to obtain VTB access token",
+                    notify_status: null,
+                    notify_result: null,
+                    notify_data: null,
+                    notify_error: null,
+                });
+            }
+            if (e.reason === "not_found") {
+                return res.status(200).json({
+                    status: "not_found",
+                    message: "No payment info found",
+                    notify_status: null,
+                    notify_result: null,
+                    notify_data: null,
+                    notify_error: null,
+                });
+            }
+            throw e;
         }
 
-        const headers = {
-            "X-IBM-Client-Id": requireEnv('VTB_CLIENT_ID'),
-            "Merchant-Authorization": requireEnv('VTB_MERCHANT_AUTH'),
-            "Authorization": `Bearer ${tokenData.access_token}`,
-            "Content-Type": "application/json",
-        };
-
-        const vtbResponse = await axios.post(
-            "https://gw.api.vtb.ru/openapi/smb/efcp/sbp-gateway/v1/qr/dynamics/info",
-            { qrcId },
-            { headers, ...vtbAxiosConfig }
-        );
-
-        const payment = vtbResponse?.data?.data || vtbResponse?.data;
-        if (!payment) {
-            return res.status(200).json({
-                status: "not_found",
-                message: "No payment info found",
-                notify_status: null,
-                notify_result: null,
-                notify_data: null,
-                notify_error: null,
-            });
-        }
-
-        const pay_status = resolveVtbPayStatus(payment);
-        const paid = pay_status === "RECONCILED";
-        const requestId = payment.requestId || payment.orderId;
-        const resolved_order_id = clean_order_id || String(requestId || "").replace(/^ORDER/i, "");
-        const transaction_id = payment.transactionId || requestId;
-        const transaction_code = payment.orderCode || qrcId;
-        const amount = payment?.amount?.value ?? payment?.amount;
+        const pay_status = info.payStatus;
+        const paid = info.paid;
+        const resolved_order_id = clean_order_id || numericOrderId(info.requestId);
+        const transaction_id = info.transactionId;
+        const transaction_code = info.transactionCode || qrcId;
+        const amount = info.amount;
 
         let notify_status = null;
         let notify_result = null;

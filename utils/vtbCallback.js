@@ -3,7 +3,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { logCallback, logCallbackError } = require('./callbackLogger');
 const { requireEnv } = require('../lib/env');
-const notifyHub = require('../lib/notifyHub');
+const { canonicalPayStatus } = require('../lib/customRooms/vtbCheck');
 
 const LOG = 'VTB_CALLBACK';
 
@@ -93,19 +93,28 @@ function resolveLtOrderId(object) {
   return null;
 }
 
+async function findByCode(code) {
+  if (!code) return null;
+  const [rows] = await db.query(
+    'SELECT order_id, pay_status, transaction_code FROM orders WHERE transaction_code = ? LIMIT 1',
+    [String(code)]
+  );
+  return rows[0] || null;
+}
+
 async function findOrderInDb(object) {
   const sbp = object.sbpParams || {};
-  const qrcId = sbp.qrcId;
+  const prepared = (Array.isArray(object.preparedPayments) ? object.preparedPayments : [])
+    .find((item) => String(item?.type || '').toLowerCase() === 'sbp');
+  const qrcId = sbp.qrcId || prepared?.object?.qrcId;
   const parsedId = resolveLtOrderId(object);
   const paymentId = object.paymentId || sbp.transactionId;
 
-  if (qrcId) {
-    const [rows] = await db.query(
-      'SELECT order_id, pay_status, transaction_code FROM orders WHERE transaction_code = ? LIMIT 1',
-      [qrcId]
-    );
-    if (rows[0]) return rows[0];
-  }
+  const byQrc = await findByCode(qrcId);
+  if (byQrc) return byQrc;
+
+  const byOrderCode = await findByCode(object.orderCode);
+  if (byOrderCode) return byOrderCode;
 
   if (parsedId) {
     const [rows] = await db.query(
@@ -197,7 +206,7 @@ async function processVtbCallback(payload) {
     orderId: object?.orderId,
     description: object?.description,
     pay_status: object?.status?.value,
-    qrcId: object?.sbpParams?.qrcId,
+    qrcId: object?.sbpParams?.qrcId || object?.orderCode,
     amount: object?.amount?.value,
   });
 
@@ -208,7 +217,7 @@ async function processVtbCallback(payload) {
     throw err;
   }
 
-  const payStatus = object.status?.value || null;
+  const payStatus = canonicalPayStatus(object.status?.value);
   const sbp = object.sbpParams || {};
   const dbOrder = await findOrderInDb(object);
   const dbOrderId = dbOrder?.order_id ?? null;
@@ -224,7 +233,7 @@ async function processVtbCallback(payload) {
   const transactionCode = sbp.qrcId || object.paymentCode || object.orderCode;
   const amount = parseAmount(object.amount?.value ?? sbp.amount);
 
-  if (type === 'PAYMENT') {
+  if (type === 'PAYMENT' || type === 'ORDER') {
     let duplicate = false;
     let ltNotify = null;
 
