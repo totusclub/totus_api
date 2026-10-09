@@ -42,10 +42,17 @@ function normalizeAmount(amount) {
     return { value, code: 'RUB' };
 }
 
+function customerReturnUrl(returnUrl, fallback) {
+    const value = String(returnUrl || '').trim();
+    if (/^https:\/\/totus\.club\//i.test(value)) return value;
+    return fallback;
+}
+
 async function createVtbPaymentForOrder({
     orderId,
     orderName,
     amount,
+    returnUrl,
     paymentPurpose,
     purposeText,
     paymentMinutes = 30,
@@ -132,8 +139,7 @@ async function createVtbPaymentForOrder({
             orderId: cleanOrderId,
             orderName: String(orderName || purpose || `ORDER${cleanOrderId}`).slice(0, 140),
             amount: normalizedAmount,
-            returnUrl: checkoutUrl,
-            redirectUrl: checkoutUrl,
+            returnUrl: customerReturnUrl(returnUrl, checkoutUrl),
         },
         { headers, ...vtbAxiosConfig }
     );

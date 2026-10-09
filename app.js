@@ -597,6 +597,7 @@ app.post('/vtb/create-order', async (req, res) => {
             orderId,
             orderName,
             amount,
+            returnUrl,
             paymentPurpose: paymentPurpose || purposeText,
             paymentMinutes: 30,
             sendEmail: true,
@@ -604,8 +605,12 @@ app.post('/vtb/create-order', async (req, res) => {
 
         res.json(result);
     } catch (error) {
-        console.error("VTB Order Creation Error:", error.response?.data || error.message);
-        res.status(500).json({ error: "Failed to create VTB order", details: error.message });
+        const vtbDetails = error.response?.data || error.message;
+        console.error("VTB Order Creation Error:", vtbDetails);
+        res.status(500).json({
+            error: "Failed to create VTB order",
+            details: typeof vtbDetails === 'string' ? vtbDetails : JSON.stringify(vtbDetails),
+        });
     }
 });
 
