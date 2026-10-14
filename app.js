@@ -37,6 +37,8 @@ app.use(optionalCompression());
 app.use(helmetMiddleware());
 app.use(corsMiddleware());
 app.use(express.json());
+// Журнал согласий: пишет req.body.consents форм после успешного ответа (middleware/consentsRecorder.js).
+app.use(require('./middleware/consentsRecorder')());
 
 // Документы заказа (SECURITY_AUDIT_2026-09_RU.md, К1): ссылки в ответах клиенту
 // подписываются, а сама отдача файлов идёт с проверкой доступа. Оба middleware
@@ -1637,6 +1639,7 @@ app.use('/api/admin', callbackRequestsAdminRoutes);
 app.use('/api/order-requests', orderRequestsRoutes);
 app.use('/api/admin/order-requests', orderRequestsAdminRoutes);
 app.use('/api/partner-requests', partnerRequestsRoutes);
+app.use('/api/consents', require('./routes/consents.routes'));
 app.use('/api/admin/partner-requests', partnerRequestsAdminRoutes);
 app.use('/api', homeBannersPublicRoutes);
 app.use('/api/admin', homeBannersAdminRoutes);
