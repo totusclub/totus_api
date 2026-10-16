@@ -583,10 +583,12 @@ app.post('/packages/flights', async (req, res) => {
         });
         // ?view=list — лёгкий ответ для страницы билетов сайта (utils/flightsListView.js).
         // Без параметра — прежний полный ответ LT (приложение, бронирование, оформление).
-        if (String(req.query.view || '') === 'list') {
-            const body = toFlightsListView(response.data);
+        // ?view=app — то же для экрана «Перелёты» приложения (+ поля, которые читает приложение).
+        const flightsView = String(req.query.view || '');
+        if (flightsView === 'list' || flightsView === 'app') {
+            const body = toFlightsListView(response.data, { app: flightsView === 'app' });
             const flightsCount = Array.isArray(body?.flights) ? body.flights.length : 0;
-            console.log(`[FLIGHTS] package_id=${data.package_id} view=list flights=${flightsCount} lt_ms=${Date.now() - startedAt}`);
+            console.log(`[FLIGHTS] package_id=${data.package_id} view=${flightsView} flights=${flightsCount} lt_ms=${Date.now() - startedAt}`);
             return res.json(body);
         }
         // ?view=pair&flight_pair_id=… — только выбранный перелёт (бронирование: топливный сбор),
