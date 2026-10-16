@@ -75,6 +75,14 @@ const {
     logLtError,
     sendLtAxiosError,
 } = require('./utils/levelTravelHttp');
+// Таймауты и ошибки шагов бронирования, выбранный перелёт (?view=pair).
+const {
+    LT_STEP_TIMEOUT_MS,
+    isTimeoutError,
+    ltStepErrorResponse,
+    pickFlightPair,
+    firstQueryValue,
+} = require('./utils/ltPackageProxy');
 
 const HEADERS = getLtHeaders('3.7');
 const HEADERS_3_8 = getLtHeaders('3.8');
@@ -277,34 +285,40 @@ app.get('/start-search', async (req, res) => {
     }
 });
 
+// Шаги бронирования (utils/ltPackageProxy.js): таймаут к LT меньше 60 с прокси, в ответе об ошибке —
+// прежнее поле error + code (lt_timeout / lt_unreachable / lt_error / internal), message, status.
 app.get('/packages/package_details', async (req, res) => {
+    const startedAt = Date.now();
     try {
         console.log(req.query)
         const response = await axios.get(`${BASE_URL}/packages/package_details`, {
             params: req.query,
             headers: HEADERS,
+            timeout: LT_STEP_TIMEOUT_MS.packageDetails,
         });
         res.json(response.data);
     } catch (error) {
-
-        // console.log({...error.message})
-        console.error('Error starting  :', error.message);
-        res.status(500).json({ error: 'Failed to start search' });
+        const { status, body } = ltStepErrorResponse(error, 'Failed to start search');
+        console.error(`[LT] package_details failed: ${body.code} status=${status} ms=${Date.now() - startedAt} ${body.message}`);
+        res.status(status).json(body);
     }
 });
 app.get('/packages/actualize', async (req, res) => {
+    const startedAt = Date.now();
     try {
         console.log(req.query)
         const response = await axios.get(`${BASE_URL}/packages/actualize`, {
             params: req.query,
             headers: HEADERS,
+            timeout: LT_STEP_TIMEOUT_MS.actualize,
         });
+        const ms = Date.now() - startedAt;
+        if (ms > 15000) console.warn(`[LT] actualize slow: package_id=${firstQueryValue(req.query.package_id)} ms=${ms}`);
         res.json(response.data);
     } catch (error) {
-
-        // console.log({...error.message})
-        console.error('Error starting  :', error.message);
-        res.status(500).json({ error: 'Failed to start search' });
+        const { status, body } = ltStepErrorResponse(error, 'Failed to start search');
+        console.error(`[LT] actualize failed: ${body.code} status=${status} package_id=${firstQueryValue(req.query.package_id)} ms=${Date.now() - startedAt} ${body.message}`);
+        res.status(status).json(body);
     }
 });
 
@@ -312,10 +326,14 @@ app.post('/orders/prebuild', async (req, res) => {
     try {
         const response = await axios.post(`${BASE_URL}/orders/prebuild`, req.body, {
             headers: HEADERS,
+            timeout: LT_STEP_TIMEOUT_MS.prebuild,
         });
         res.json(response.data);
     } catch (error) {
         console.error('Order prebuild error:', error.response?.data || error.message);
+        if (isTimeoutError(error)) {
+            return res.status(504).json({ success: false, error: { message: 'Level.Travel не ответил вовремя' }, code: 'lt_timeout' });
+        }
         res.status(error.response?.status || 500).json({
             success: false,
             error: error.response?.data || error.message,
@@ -570,6 +588,13 @@ app.post('/packages/flights', async (req, res) => {
             const flightsCount = Array.isArray(body?.flights) ? body.flights.length : 0;
             console.log(`[FLIGHTS] package_id=${data.package_id} view=list flights=${flightsCount} lt_ms=${Date.now() - startedAt}`);
             return res.json(body);
+        }
+        // ?view=pair&flight_pair_id=… — только выбранный перелёт (бронирование: топливный сбор),
+        // вместо полного списка (у популярного тура — 2000 рейсов, 12 МБ).
+        if (String(req.query.view || '') === 'pair') {
+            const pairBody = pickFlightPair(response.data, firstQueryValue(req.query.flight_pair_id));
+            console.log(`[FLIGHTS] package_id=${data.package_id} view=pair found=${pairBody?.found} of=${pairBody?.total_flights} lt_ms=${Date.now() - startedAt}`);
+            return res.json(pairBody);
         }
         res.json(response.data);
     } catch (error) {
@@ -852,7 +877,7 @@ app.post('/validate-tourists', async (req, res) => {
         const response = await axios.post(
             `${BASE_URL}/tourists/validate`,
             req.body,
-            { headers: HEADERS }
+            { headers: HEADERS, timeout: LT_STEP_TIMEOUT_MS.validateTourists }
         );
 
         console.log('response.data:', response.data);
@@ -864,6 +889,9 @@ app.post('/validate-tourists', async (req, res) => {
             'Validate tourists error:',
             error.response?.data || error.message
         );
+        if (isTimeoutError(error)) {
+            return res.status(504).json({ success: false, error: 'Level.Travel не ответил вовремя', code: 'lt_timeout' });
+        }
 
         return res.status(error.response?.status || 500).json({
             success: false,
