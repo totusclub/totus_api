@@ -12,6 +12,11 @@
  * Скалярные поля рейса и сегмента (даты, время, класс, номер рейса, тип, признаки) остаются все —
  * они дешёвые; режутся только вложенные объекты/массивы. Порядок рейсов и их число не меняются.
  * Без ?view=list ответ прежний (приложение, бронирование, оформление заказа).
+ *
+ * ?view=app — то же для экрана «Перелёты» приложения (totus_APP): плюс поля, которые читает
+ * приложение — availability рейса (метка «Блочный», подсказка), warning авиакомпании,
+ * operator_id / title у опций фильтра (фильтр по туроператорам). Подробности перелёта
+ * (пересадки) экран рейса берёт отдельно через ?view=pair. Старое приложение view не шлёт.
  */
 
 function isPlainObject(v) {
@@ -37,9 +42,9 @@ function scalars(obj) {
     return out;
 }
 
-function slimAirline(airline) {
+function slimAirline(airline, app) {
     if (!isPlainObject(airline)) return airline;
-    const out = pick(airline, ['id', 'name']);
+    const out = pick(airline, app ? ['id', 'name', 'warning'] : ['id', 'name']);
     if (isPlainObject(airline.logo)) out.logo = pick(airline.logo, ['src']);
     return out;
 }
@@ -60,21 +65,22 @@ function slimLuggage(luggage) {
     return out;
 }
 
-function slimSegment(segment) {
+function slimSegment(segment, app) {
     if (!isPlainObject(segment)) return segment;
     const out = scalars(segment);
-    if ('airline' in segment) out.airline = slimAirline(segment.airline);
+    if ('airline' in segment) out.airline = slimAirline(segment.airline, app);
     if ('origin' in segment) out.origin = slimPlace(segment.origin);
     if ('destination' in segment) out.destination = slimPlace(segment.destination);
     if ('luggage' in segment) out.luggage = slimLuggage(segment.luggage);
     return out;
 }
 
-function slimFlight(flight) {
+function slimFlight(flight, app) {
     if (!isPlainObject(flight)) return flight;
     const out = scalars(flight);
-    if ('to' in flight) out.to = slimSegment(flight.to);
-    if ('back' in flight) out.back = slimSegment(flight.back);
+    if ('to' in flight) out.to = slimSegment(flight.to, app);
+    if ('back' in flight) out.back = slimSegment(flight.back, app);
+    if (app && isPlainObject(flight.availability)) out.availability = scalars(flight.availability);
     return out;
 }
 
@@ -85,38 +91,46 @@ const FILTER_OPTION_KEYS = [
     'luggage_type', 'flight_class', 'flight_type', 'interval', 'number',
 ];
 
-function slimOption(option) {
-    return isPlainObject(option) ? pick(option, FILTER_OPTION_KEYS) : option;
+// Приложение дополнительно читает operator_id и title (фильтр по туроператорам).
+const APP_FILTER_OPTION_KEYS = [...FILTER_OPTION_KEYS, 'operator_id', 'title'];
+
+function slimOption(option, app) {
+    return isPlainObject(option) ? pick(option, app ? APP_FILTER_OPTION_KEYS : FILTER_OPTION_KEYS) : option;
 }
 
-function slimFilterValue(value) {
-    if (Array.isArray(value)) return value.map(slimOption);
+function slimFilterValue(value, app) {
+    if (Array.isArray(value)) return value.map((option) => slimOption(option, app));
     if (isPlainObject(value)) {
         // departure_airports / arrival_airports: { cities: [...], airports: [...] }
         const out = {};
         for (const [key, inner] of Object.entries(value)) {
-            out[key] = Array.isArray(inner) ? inner.map(slimOption) : inner;
+            out[key] = Array.isArray(inner) ? inner.map((option) => slimOption(option, app)) : inner;
         }
         return out;
     }
     return value;
 }
 
-function slimFilters(filters) {
+function slimFilters(filters, app) {
     if (!isPlainObject(filters)) return filters;
     const out = {};
-    for (const [key, value] of Object.entries(filters)) out[key] = slimFilterValue(value);
+    for (const [key, value] of Object.entries(filters)) out[key] = slimFilterValue(value, app);
     return out;
 }
 
-/** Ответ LT → лёгкий ответ. Неизвестные верхнеуровневые поля (success и др.) сохраняются как есть. */
-function toFlightsListView(body) {
+/**
+ * Ответ LT → лёгкий ответ. Неизвестные верхнеуровневые поля (success и др.) сохраняются как есть.
+ * options.app — вариант для приложения (?view=app), см. комментарий в начале файла.
+ */
+function toFlightsListView(body, options) {
     if (!isPlainObject(body)) return body;
+    const app = Boolean(options && options.app);
     const out = { ...body };
-    if (Array.isArray(body.flights)) out.flights = body.flights.map(slimFlight);
-    if ('filters' in body) out.filters = slimFilters(body.filters);
+    if (Array.isArray(body.flights)) out.flights = body.flights.map((flight) => slimFlight(flight, app));
+    if ('filters' in body) out.filters = slimFilters(body.filters, app);
     out.list_view = true;
+    if (app) out.app_view = true;
     return out;
 }
 
-module.exports = { toFlightsListView, slimFlight, slimFilters, FILTER_OPTION_KEYS };
+module.exports = { toFlightsListView, slimFlight, slimFilters, FILTER_OPTION_KEYS, APP_FILTER_OPTION_KEYS };

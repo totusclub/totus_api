@@ -131,10 +131,30 @@ check('обработчик: ?view=list — лёгкий ответ, без па
     const src = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
     const start = src.indexOf("app.post('/packages/flights'");
     const handler = src.slice(start, src.indexOf('\n});', start));
-    assert.match(handler, /if \(String\(req\.query\.view \|\| ''\) === 'list'\) \{[\s\S]*toFlightsListView\(response\.data\)[\s\S]*return res\.json\(body\);/);
+    assert.match(handler, /const flightsView = String\(req\.query\.view \|\| ''\);\s*if \(flightsView === 'list' \|\| flightsView === 'app'\) \{[\s\S]*toFlightsListView\(response\.data, \{ app: flightsView === 'app' \}\)[\s\S]*return res\.json\(body\);/);
     assert.match(handler, /res\.json\(response\.data\);/);
     assert.match(handler, /const raw = req\.body/);
     assert.ok(!/req\.query\.view[\s\S]*data\.view/.test(handler));
+});
+
+check('?view=app (приложение): плюс availability рейса, warning авиакомпании, operator_id / title опций', () => {
+    const withAvailability = { ...flight(5), availability: { flight: true, tooltip: 'Осталось 2 места', nested: { x: 1 } } };
+    const app = slimFlight(withAvailability, true);
+    assert.deepStrictEqual(app.availability, { flight: true, tooltip: 'Осталось 2 места' });
+    assert.strictEqual(app.to.airline.warning, true);
+    assert.ok(!JSON.stringify(app).includes('srcset'));
+    // сайт (?view=list) — как раньше
+    const site = slimFlight(withAvailability);
+    assert.ok(!('availability' in site));
+    assert.ok(!('warning' in site.to.airline));
+    const filters = { operators: [option({ id: 78, name: 'Level.Travel', operator_id: 78, title: 'Level.Travel' })] };
+    assert.deepStrictEqual(slimFilters(filters, true).operators[0], { id: 78, name: 'Level.Travel', disabled: false, selected: false, suitable_flights: 115, min_fuel_charge: 0, operator_id: 78, title: 'Level.Travel' });
+    assert.ok(!('operator_id' in slimFilters(filters).operators[0]));
+    const view = toFlightsListView(ltBody, { app: true });
+    assert.strictEqual(view.app_view, true);
+    assert.strictEqual(view.list_view, true);
+    assert.ok(!('app_view' in toFlightsListView(ltBody)));
+    assert.ok(JSON.stringify(view).length < JSON.stringify(ltBody).length * 0.6);
 });
 
 console.log(`\n${passed} passed`);
