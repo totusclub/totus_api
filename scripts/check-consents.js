@@ -174,20 +174,22 @@ const ok200 = (body) => (req, res) => res.status(200).json(body);
         assert.strictEqual(recorder.findRoute({ method: 'POST', path: '/api/auth/signin' }), null);
     });
 
-    await check('POST /api/consents: пишет согласия вошедшего (Яндекс ID), пустой запрос — 400', async () => {
+    await check('POST /api/consents: пишет согласия вошедшего, неизвестная форма → account, пустой запрос — 400', async () => {
         const before = rows.length;
         const r = new EventEmitter();
         r.status = (c) => { r.statusCode = c; return r; };
         r.json = (b) => { r.body = b; return r; };
         await ctrl.create({
             body: { form: 'signup_yandex', consents: { pd: true, ads: false } },
-            auth: { id: 77, role: 'user', payload: { email: 'Ya@Yandex.ru', phone: null } },
+            auth: { id: 77, role: 'user', payload: { email: 'Me@Mail.ru', phone: null } },
             headers: { origin: 'https://totus.club' }, ip: '1.1.1.1', get: () => 'UA',
         }, r);
         assert.strictEqual(r.statusCode, 201, JSON.stringify(r.body));
         const added = rows.slice(before);
         assert.strictEqual(added.length, 2);
-        assert.ok(added.every((x) => x.user_id === 77 && x.form === 'signup_yandex' && x.email === 'ya@yandex.ru'));
+        assert.ok(added.every((x) => x.user_id === 77 && x.form === 'account' && x.email === 'me@mail.ru'));
+        assert.ok(!('signup_yandex' in consents.FORMS), 'формы signup_yandex (вход через Яндекс ID) больше нет');
+        assert.deepStrictEqual(ctrl.ALLOWED_FORMS, ['account']);
         const empty = new EventEmitter();
         empty.status = (c) => { empty.statusCode = c; return empty; };
         empty.json = (b) => { empty.body = b; return empty; };
