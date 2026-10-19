@@ -1,10 +1,10 @@
 'use strict';
 
-// POST /api/consents — согласия вошедшего пользователя, данные при отдельном шаге
-// (новый пользователь Яндекс ID на экране «Почти готово»). Только с JWT.
+// POST /api/consents — согласия вошедшего пользователя, данные отдельным шагом
+// (например, из личного кабинета). Только с JWT.
 const { recordConsents, normalizeConsents } = require('../lib/consents');
 
-const ALLOWED_FORMS = ['signup_yandex', 'account'];
+const ALLOWED_FORMS = ['account'];
 
 exports.create = async (req, res) => {
     const body = req.body || {};

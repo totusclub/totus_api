@@ -29,16 +29,16 @@
 | `POST /api/auth/signup` | `signup` | в ответе есть `screen` |
 | `POST /create-package` | `booking` | статус < 400, нет `error`, `success !== false` (Level.Travel отвечает 200 с `error`) |
 | `POST /api/partner-requests` | `partner` | в ответе есть `id` (ловушка для ботов отвечает без него) |
-| `POST /api/consents` | `signup_yandex` / `account` | отдельный эндпоинт, см. ниже |
+| `POST /api/consents` | `account` | отдельный эндпоинт, см. ниже |
 
 ## POST /api/consents
 
-Согласия вошедшего пользователя, когда данные уже получены другим путём — новый пользователь Яндекс ID на экране «Почти готово». Только с JWT пользователя (`requireAuth(['user'], { strict: true })`).
+Согласия вошедшего пользователя, переданные отдельным шагом (например, из личного кабинета). Форма всегда `account` — другое значение `form` сервер заменяет на `account`. Только с JWT пользователя (`requireAuth(['user'], { strict: true })`).
 
 ```http
 POST /api/consents
 Authorization: Bearer <access>
-{ "form": "signup_yandex", "consents": { "pd": true, "ads": false } }
+{ "form": "account", "consents": { "pd": true, "ads": false } }
 ```
 
 Ответ `201 { ok: true, written: 2 }`; без согласий — `400 consents_required`; без токена — `401`.
