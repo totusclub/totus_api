@@ -36,7 +36,7 @@ pm2 logs totus-api --lines 200000 --nostream | node scripts/analyze-auth-log.js
 
 ## Шаг 1. Что починить в клиентах до включения
 
-По разбору кода всех четырёх клиентов нашлось четыре места, которые сломаются.
+По разбору кода всех четырёх клиентов нашлось три места, которые сломаются.
 Отсортированы по тому, насколько заметно это будет человеку.
 
 | # | Где | Что произойдёт | Что делать |
@@ -44,7 +44,6 @@ pm2 logs totus-api --lines 200000 --nostream | node scripts/analyze-auth-log.js
 | 1 | `totus_WEB`: `src/lib/cmsPage.ts`, `src/hooks/useCmsPage.ts`, `src/components/staticInfoPage/CmsStaticPage.tsx` | Сайт при неудаче публичного `/api/pages/slug/:slug` падает на `/api/admin/pages/slug/:slug` и `/api/admin/pages` голым fetch без токена. После enforce такие страницы (оферта, политика, помощь) покажут «Контент пока не опубликован» | Убрать fallback на admin-маршруты; недостающие страницы отдавать публичным роутером. Заодно закроется утечка списка всех страниц |
 | 2 | `Totus_admin`: `components/AuthGuard.tsx` | `installStaffFetch()` вызывается в `useEffect` родителя, а эффекты дочерних страниц React выполняет раньше — первый запрос после жёсткой перезагрузки уходит без заголовка. Сейчас это незаметно, после enforce — пустые таблицы в любом разделе | Вызывать `installStaffFetch()` на уровне модуля или в layout до рендера дерева |
 | 3 | `totus_APP`: `src/modules/store/actions/notification.ts` | `POST /notification-tokens` берёт токен из redux. При раннем старте (фоновый запуск по пушу или звонку) redux-persist ещё не регидратирован — запрос уйдёт анонимным. После enforce устройство молча не зарегистрируется и пуши перестанут приходить | Читать токен из AsyncStorage, как уже сделано в `src/modules/api/voipAuth.ts` (`readPersistedToken`). До релиза — держать `/notification-tokens` в `AUTH_LOG_ONLY_PATHS` |
-| 4 | `totus_WEB`: `src/api/YandexAuthApi.ts` | `GET /api/auth/yandex/status` идёт отдельным axios без интерсепторов, то есть без токена | **Не блокер**: `isYandexAuthEnabled()` считает раздел включённым при 200/401/403, так что 401 кнопку не уберёт. Просто иметь в виду |
 
 ## Шаг 2. Что можно закрывать сразу
 
@@ -74,7 +73,7 @@ pm2 logs totus-api --lines 200000 --nostream | node scripts/analyze-auth-log.js
 - **Контент сайта:** `/api/pages/slug/:slug`, `/api/faq`, `/api/footer-social`,
   `/api/home-banners`, `/api/home-hero`, `/api/home-partners`.
 - **Вход и регистрация:** `/api/auth/signin`, `/signup`, `/verify`,
-  `/api/auth/refresh`, `/customer-auth/refresh-token`, `/api/auth/yandex/*`,
+  `/api/auth/refresh`, `/customer-auth/refresh-token`,
   `/api/admin/auth/sign-in`, `/api/admin/auth/refresh`.
 - **Обратный звонок:** `POST /api/callback-requests`.
 - **Платёжные callback'и и webhook'и LT** — у них своя проверка (или должна
