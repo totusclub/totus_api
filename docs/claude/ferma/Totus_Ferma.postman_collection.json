@@ -1,0 +1,930 @@
+{
+  "info": {
+    "name": "Totus Club · Ferma (OFD.ru)",
+    "description": "Проверка API онлайн-кассы Ferma для Totus Club. Составлено 20.10.2026 по документации v2.88 и прогону на ferma-test.ofd.ru. Порядок: 0 → 1 → 2 → 3 → 4. Окружение «Ferma TEST» — публичный стенд OFD.ru; «Ferma PROD» — заполнить после подключения ТОТУСКЛАБ. Подробно — claude/FERMA_TESTING_RU.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Токен Ferma: берём заново, если его нет или до конца жизни меньше 5 минут.",
+          "// Запрос «0.1 Получить токен» токен не подставляет — он его создаёт.",
+          "if (pm.info.requestName.indexOf('0.') === 0) { return; }",
+          "const exp = pm.environment.get('fermaTokenExp');",
+          "const fresh = pm.environment.get('fermaToken') && exp && (Date.now() < Date.parse(exp + 'Z') - 5 * 60 * 1000);",
+          "if (!fresh) {",
+          "  pm.sendRequest({",
+          "    url: pm.environment.get('baseUrl') + '/api/Authorization/CreateAuthToken',",
+          "    method: 'POST',",
+          "    header: { 'Content-Type': 'application/json' },",
+          "    body: { mode: 'raw', raw: JSON.stringify({ Login: pm.environment.get('login'), Password: pm.environment.get('password') }) }",
+          "  }, function (err, res) {",
+          "    if (err) { console.error('Ferma auth error', err); return; }",
+          "    const d = res.json().Data || {};",
+          "    pm.environment.set('fermaToken', d.AuthToken);",
+          "    pm.environment.set('fermaTokenExp', d.ExpirationDateUtc);",
+          "    console.log('Ferma: новый токен до ' + d.ExpirationDateUtc + ' UTC');",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Авторизация",
+      "item": [
+        {
+          "name": "0.1 Получить токен",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/Authorization/CreateAuthToken",
+            "description": "Логин и пароль — из окружения. Токен действует до ExpirationDateUtc (UTC+0). Остальные запросы коллекции получают токен сами.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Login\": \"{{login}}\",\n  \"Password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const d = pm.response.json().Data || {};",
+                  "pm.environment.set('fermaToken', d.AuthToken);",
+                  "pm.environment.set('fermaTokenExp', d.ExpirationDateUtc);",
+                  "console.log('Токен до ' + d.ExpirationDateUtc + ' UTC (формат на стенде 20.10.2026 — UUID, не 32 hex)');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Касса и параметры регистрации",
+      "item": [
+        {
+          "name": "1.1 Кассы, ФН, тариф (cashboxes/extended)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/stats/cashboxes/extended?AuthToken={{fermaToken}}",
+            "description": "Ответ содержит и поля, которых нет в документации: inn, taxModeMask, agentModeMask, isAgent, isInternet, ffdVersion, paymentPlace — ими проверяем, что касса зарегистрирована с нужными параметрами."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const all = pm.response.json().Data || [];",
+                  "const ready = all.filter(function (k) { return k.kktState === 'Готова к работе'; });",
+                  "pm.test('Есть касса «Готова к работе»', function () { pm.expect(ready.length).to.be.above(0); });",
+                  "ready.forEach(function (k) {",
+                  "  console.log('Касса ' + k.deviceId + ' РНМ ' + k.rnm + ' ФН ' + k.fn + ' ИНН ' + k.inn + ' ФФД ' + k.ffdVersion +",
+                  "    ' агент=' + k.isAgent + ' интернет=' + k.isInternet + ' СНО-маска=' + k.taxModeMask + ' агент-маска=' + k.agentModeMask +",
+                  "    ' место=' + k.paymentPlace + ' тариф до ' + k.tariffEndDate + ' ФН заполнен ' + k.fnVolumePercent + '%');",
+                  "});",
+                  "pm.test('Касса для Totus: ФФД 1.2, признак агента, только интернет', function () {",
+                  "  pm.expect(ready.some(function (k) { return k.ffdVersion === '1.2' && k.isAgent === true && k.isInternet === true; })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 Очередь чеков",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/stats/receipts/queue/length?AuthToken={{fermaToken}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "console.log('В очереди: ' + pm.response.json().Data.Length);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Чеки (сценарии Totus)",
+      "item": [
+        {
+          "name": "2.1 Тур: приход, предоплата 100 %, агентский",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Сценарий А. Агентские данные только в позиции — так проверено на стенде 20.10.2026. В Label обычный дефис: длинное тире касса выбрасывает.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoicePay}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Тур: Турция, тестовый отель, 20.11-27.11.2026, заказ {{orderId}}\",\n          \"Price\": {{amountTour}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountTour}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"{{supplierInn}}\",\n            \"SupplierName\": \"{{supplierName}}\",\n            \"SupplierPhone\": \"{{supplierPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountTour}}\n        }\n      ],\n      \"CashlessPayments\": [\n        {\n          \"PaymentSum\": {{amountTour}},\n          \"PaymentMethodFlag\": \"{{paymentMethodFlag}}\",\n          \"PaymentIdentifiers\": \"vtb-test-{{orderId}}\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-pay-1",
+                  "pm.environment.set('invoicePay', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-pay-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const id = (pm.response.json().Data || {}).ReceiptId;",
+                  "pm.test('Есть ReceiptId', function () { pm.expect(id).to.be.a('string'); });",
+                  "pm.environment.set('receiptIdPay', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 Статус по ReceiptId",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdPay}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Статус 0, 1 или 2 (не KKT_ERROR)', function () { pm.expect([0, 1, 2]).to.include(d.StatusCode); });",
+                  "console.log('Статус: ' + d.StatusCode + ' ' + d.StatusName + ' — ' + (d.StatusMessage || '') + (d.Description ? ' / ' + d.Description : ''));",
+                  "if (d.StatusCode === 2 && d.Device) {",
+                  "  pm.environment.set('lastOfdUrl', d.Device.OfdReceiptUrl);",
+                  "  console.log('Чек: ' + d.Device.OfdReceiptUrl + ' (ФН ' + d.Device.FN + ', ФД ' + d.Device.FDN + ', ФП ' + d.Device.FPD + ')');",
+                  "}",
+                  "if (d.StatusCode === 0 || d.StatusCode === 1) { console.log('Ещё не финал — повторите запрос через несколько секунд.'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 Статус по InvoiceId",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"InvoiceId\": \"{{invoicePay}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Статус 0, 1 или 2 (не KKT_ERROR)', function () { pm.expect([0, 1, 2]).to.include(d.StatusCode); });",
+                  "console.log('Статус: ' + d.StatusCode + ' ' + d.StatusName + ' — ' + (d.StatusMessage || '') + (d.Description ? ' / ' + d.Description : ''));",
+                  "if (d.StatusCode === 2 && d.Device) {",
+                  "  pm.environment.set('lastOfdUrl', d.Device.OfdReceiptUrl);",
+                  "  console.log('Чек: ' + d.Device.OfdReceiptUrl + ' (ФН ' + d.Device.FN + ', ФД ' + d.Device.FDN + ', ФП ' + d.Device.FPD + ')');",
+                  "}",
+                  "if (d.StatusCode === 0 || d.StatusCode === 1) { console.log('Ещё не финал — повторите запрос через несколько секунд.'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 Повтор с тем же InvoiceId (ожидаем 1019)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Второй чек не создаётся. Ferma отвечает ошибкой 1019 и возвращает ExistingReceiptId — наш сервер должен считать это успехом.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoicePay}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Тур: Турция, тестовый отель, 20.11-27.11.2026, заказ {{orderId}}\",\n          \"Price\": {{amountTour}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountTour}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"{{supplierInn}}\",\n            \"SupplierName\": \"{{supplierName}}\",\n            \"SupplierPhone\": \"{{supplierPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountTour}}\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400, код 1019', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().Error.Code).to.eql(1019);",
+                  "});",
+                  "pm.test('ExistingReceiptId = ReceiptId первого чека', function () {",
+                  "  pm.expect(pm.response.json().Data.ExistingReceiptId).to.eql(pm.environment.get('receiptIdPay'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 Возврат частичный",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Сценарий Д. Те же поставщик и признак способа расчёта (1 — предоплата 100 %), сумма — фактически возвращённая.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"IncomeReturn\",\n    \"InvoiceId\": \"{{invoiceRet}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Возврат: тур Турция, 20.11-27.11.2026, заказ {{orderId}}\",\n          \"Price\": {{amountReturn}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountReturn}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"{{supplierInn}}\",\n            \"SupplierName\": \"{{supplierName}}\",\n            \"SupplierPhone\": \"{{supplierPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountReturn}}\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-ret-1",
+                  "pm.environment.set('invoiceRet', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-ret-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const id = (pm.response.json().Data || {}).ReceiptId;",
+                  "pm.test('Есть ReceiptId', function () { pm.expect(id).to.be.a('string'); });",
+                  "pm.environment.set('receiptIdRet', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 Статус возврата",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdRet}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Статус 0, 1 или 2 (не KKT_ERROR)', function () { pm.expect([0, 1, 2]).to.include(d.StatusCode); });",
+                  "console.log('Статус: ' + d.StatusCode + ' ' + d.StatusName + ' — ' + (d.StatusMessage || '') + (d.Description ? ' / ' + d.Description : ''));",
+                  "if (d.StatusCode === 2 && d.Device) {",
+                  "  pm.environment.set('lastOfdUrl', d.Device.OfdReceiptUrl);",
+                  "  console.log('Чек: ' + d.Device.OfdReceiptUrl + ' (ФН ' + d.Device.FN + ', ФД ' + d.Device.FDN + ', ФП ' + d.Device.FPD + ')');",
+                  "}",
+                  "if (d.StatusCode === 0 || d.StatusCode === 1) { console.log('Ещё не финал — повторите запрос через несколько секунд.'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 Номер Arlekino: приход, агентский",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Сценарий Г, вариант 1 (поставщик — продавец размещения). Какой вариант выбираем — вопрос Ф6.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoiceArl}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Проживание: тестовый отель, стандарт, 05.12-07.12.2026, заказ {{orderIdArlekino}}\",\n          \"Price\": {{amountArlekino}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountArlekino}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"{{arlekinoInn}}\",\n            \"SupplierName\": \"{{arlekinoName}}\",\n            \"SupplierPhone\": \"{{arlekinoPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountArlekino}}\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-pay-1",
+                  "pm.environment.set('invoiceArl', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-pay-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const id = (pm.response.json().Data || {}).ReceiptId;",
+                  "pm.test('Есть ReceiptId', function () { pm.expect(id).to.be.a('string'); });",
+                  "pm.environment.set('receiptIdArl', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 Статус Arlekino",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdArl}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Статус 0, 1 или 2 (не KKT_ERROR)', function () { pm.expect([0, 1, 2]).to.include(d.StatusCode); });",
+                  "console.log('Статус: ' + d.StatusCode + ' ' + d.StatusName + ' — ' + (d.StatusMessage || '') + (d.Description ? ' / ' + d.Description : ''));",
+                  "if (d.StatusCode === 2 && d.Device) {",
+                  "  pm.environment.set('lastOfdUrl', d.Device.OfdReceiptUrl);",
+                  "  console.log('Чек: ' + d.Device.OfdReceiptUrl + ' (ФН ' + d.Device.FN + ', ФД ' + d.Device.FDN + ', ФП ' + d.Device.FPD + ')');",
+                  "}",
+                  "if (d.StatusCode === 0 || d.StatusCode === 1) { console.log('Ещё не финал — повторите запрос через несколько секунд.'); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.9 Чек коррекции прихода",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Сценарий Е. Одна позиция (ошибка 1058 при двух), ставка НДС обязательна.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"IncomeCorrection\",\n    \"InvoiceId\": \"{{invoiceCor}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Тур: коррекция, заказ {{orderId}}\",\n          \"Price\": {{amountCorrection}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountCorrection}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"{{supplierInn}}\",\n            \"SupplierName\": \"{{supplierName}}\",\n            \"SupplierPhone\": \"{{supplierPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountCorrection}}\n        }\n      ],\n      \"CorrectionInfo\": {\n        \"Type\": \"SELF\",\n        \"Description\": \"Чек не сформирован при оплате заказа {{orderId}}\",\n        \"ReceiptDate\": \"{{correctionDate}}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-cor-1",
+                  "pm.environment.set('invoiceCor', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-cor-1');",
+                  "",
+                  "// Дата расчёта, к которому относится коррекция, в формате ДД.ММ.ГГ (вчера)",
+                  "const y = new Date(Date.now() - 86400000);",
+                  "const p = function (n) { return (n < 10 ? '0' : '') + n; };",
+                  "pm.environment.set('correctionDate', p(y.getDate()) + '.' + p(y.getMonth() + 1) + '.' + String(y.getFullYear()).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const id = (pm.response.json().Data || {}).ReceiptId;",
+                  "pm.test('Есть ReceiptId', function () { pm.expect(id).to.be.a('string'); });",
+                  "pm.environment.set('receiptIdCor', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.10 Статус коррекции",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdCor}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Статус 0, 1 или 2 (не KKT_ERROR)', function () { pm.expect([0, 1, 2]).to.include(d.StatusCode); });",
+                  "console.log('Статус: ' + d.StatusCode + ' ' + d.StatusName + ' — ' + (d.StatusMessage || '') + (d.Description ? ' / ' + d.Description : ''));",
+                  "if (d.StatusCode === 2 && d.Device) {",
+                  "  pm.environment.set('lastOfdUrl', d.Device.OfdReceiptUrl);",
+                  "  console.log('Чек: ' + d.Device.OfdReceiptUrl + ' (ФН ' + d.Device.FN + ', ФД ' + d.Device.FDN + ', ФП ' + d.Device.FPD + ')');",
+                  "}",
+                  "if (d.StatusCode === 0 || d.StatusCode === 1) { console.log('Ещё не финал — повторите запрос через несколько секунд.'); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Ошибки (должны отсекаться)",
+      "item": [
+        {
+          "name": "3.1 Неверный ИНН поставщика → 1085",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoiceErr}}\",\n    \"CallbackUrl\": \"{{callbackUrl}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"IsInternet\": true,\n      \"Email\": \"{{buyerEmail}}\",\n      \"BillAddress\": \"{{billAddress}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Тур: тест неверного ИНН поставщика\",\n          \"Price\": {{amountTour}},\n          \"Quantity\": 1,\n          \"Amount\": {{amountTour}},\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4,\n          \"PaymentAgentInfo\": {\n            \"AgentType\": \"{{agentType}}\",\n            \"SupplierInn\": \"123\",\n            \"SupplierName\": \"{{supplierName}}\",\n            \"SupplierPhone\": \"{{supplierPhone}}\"\n          }\n        }\n      ],\n      \"PaymentItems\": [\n        {\n          \"PaymentType\": 1,\n          \"Sum\": {{amountTour}}\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-err-1",
+                  "pm.environment.set('invoiceErr', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-err-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400, код 1085, поле supplierInn', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.Error.Code).to.eql(1085);",
+                  "  pm.expect(JSON.stringify(j.Data.ValidationErrors)).to.include('supplierInn');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Сумма позиции не сходится → KKT_ERROR",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "Запрос принимается (200), а касса отказывает. На стенде 20.10.2026: StatusCode 3, «Сумма не наличных оплат превышает сумму чека». Дальше — 3.3.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoiceErr}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystem}}\",\n      \"Email\": \"{{buyerEmail}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"Сумма позиции не сходится\",\n          \"Price\": 100.0,\n          \"Quantity\": 2,\n          \"Amount\": 150.0,\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-err-1",
+                  "pm.environment.set('invoiceErr', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-err-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200, Status = Success', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().Status).to.eql('Success');",
+                  "});",
+                  "const id = (pm.response.json().Data || {}).ReceiptId;",
+                  "pm.test('Есть ReceiptId', function () { pm.expect(id).to.be.a('string'); });",
+                  "pm.environment.set('receiptIdErr', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.3 Статус ошибочного чека (ожидаем KKT_ERROR)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdErr}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().Data || {};",
+                  "console.log(d.StatusCode + ' ' + d.StatusName + ' — ' + (d.Description || ''));",
+                  "pm.test('StatusCode = 3 (KKT_ERROR); если 0 — повторите через пару секунд', function () { pm.expect(d.StatusCode).to.eql(3); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.4 Система налогообложения не из регистрации → 1010",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/receipt?AuthToken={{fermaToken}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"Inn\": \"{{inn}}\",\n    \"Type\": \"Income\",\n    \"InvoiceId\": \"{{invoiceErr}}\",\n    \"CustomerReceipt\": {\n      \"TaxationSystem\": \"{{taxationSystemNotRegistered}}\",\n      \"Email\": \"{{buyerEmail}}\",\n      \"PaymentType\": 4,\n      \"Items\": [\n        {\n          \"Label\": \"СНО не из регистрации\",\n          \"Price\": 10,\n          \"Quantity\": 1,\n          \"Amount\": 10,\n          \"Vat\": \"{{vat}}\",\n          \"Measure\": \"PIECE\",\n          \"PaymentMethod\": 1,\n          \"PaymentType\": 4\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный InvoiceId на каждый прогон: <префикс>-<время>-err-1",
+                  "pm.environment.set('invoiceErr', pm.environment.get('invoicePrefix') + '-' + Date.now() + '-err-1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400, код 1010', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().Error.Code).to.eql(1010);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Неверный токен → 401 / 1001",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/status?AuthToken=00000000-0000-0000-0000-000000000000",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"ReceiptId\": \"{{receiptIdPay}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401, код 1001', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().Error.Code).to.eql(1001);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Реестры и сверка",
+      "item": [
+        {
+          "name": "4.1 Реестр чеков за сегодня (list2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/list2?AuthToken={{fermaToken}}",
+            "description": "На общем тестовом стенде в реестре и чужие чеки — фильтруем по своему префиксу InvoiceId.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Request\": {\n    \"StartDateLocal\": \"{{todayStart}}\",\n    \"EndDateLocal\": \"{{todayEnd}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = new Date();",
+                  "const p = function (x) { return (x < 10 ? '0' : '') + x; };",
+                  "const d = n.getFullYear() + '-' + p(n.getMonth() + 1) + '-' + p(n.getDate());",
+                  "pm.environment.set('todayStart', d + 'T00:00:00');",
+                  "pm.environment.set('todayEnd', d + 'T23:59:59');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const list = pm.response.json().Data || [];",
+                  "const prefix = pm.environment.get('invoicePrefix');",
+                  "const ours = list.filter(function (r) { return (r.InvoiceId || '').indexOf(prefix) === 0; });",
+                  "console.log('Чеков за день: ' + list.length + ', наших (префикс ' + prefix + '): ' + ours.length);",
+                  "ours.forEach(function (r) { console.log(r.InvoiceId + ' → ' + r.StatusCode + ' ' + r.StatusMessage + ' ' + r.Receipt.Type + ' ' + r.Receipt.cashboxInfoHolder.totalSum); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 Реестр с деталями (receipts/extended)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/kkt/cloud/stats/receipts/extended?AuthToken={{fermaToken}}&dateFromIncl={{todayStartSql}}&dateToIncl={{todayEndSql}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = new Date();",
+                  "const p = function (x) { return (x < 10 ? '0' : '') + x; };",
+                  "const d = n.getFullYear() + '-' + p(n.getMonth() + 1) + '-' + p(n.getDate());",
+                  "pm.environment.set('todayStartSql', encodeURIComponent(d + ' 00:00:00'));",
+                  "pm.environment.set('todayEndSql', encodeURIComponent(d + ' 23:59:59'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
