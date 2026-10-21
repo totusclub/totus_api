@@ -1670,6 +1670,10 @@ app.use('/api/admin/order-requests', orderRequestsAdminRoutes);
 app.use('/api/partner-requests', partnerRequestsRoutes);
 app.use('/api/consents', require('./routes/consents.routes'));
 app.use('/api/admin/partner-requests', partnerRequestsAdminRoutes);
+// Онлайн-касса Ferma: тестовые эндпоинты (staff) и callback (docs/FERMA_API.md). FERMA_MODE=off — выключено.
+const { publicRouter: fermaPublicRoutes, adminRouter: fermaAdminRoutes } = require('./routes/ferma.routes').buildFermaRoutes();
+app.use('/api/ferma', fermaPublicRoutes);
+app.use('/api/admin/fiscal', fermaAdminRoutes);
 app.use('/api', homeBannersPublicRoutes);
 app.use('/api/admin', homeBannersAdminRoutes);
 app.use('/api', homePartnersPublicRoutes);
@@ -1693,4 +1697,5 @@ app.listen(PORT, () => {
     console.log(`[CALLBACKS] PARTNER_API_KEY loaded: ${Boolean(process.env.PARTNER_API_KEY)}`);
     console.log(`[AUTH] mode=${authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
     console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
+    require('./lib/ferma').startFermaWorker();
 });
