@@ -822,6 +822,10 @@ app.post('/create-package', requireAuth(['user']), async (req, res) => {
                 orderData?.amount ||
                 null;
 
+            // Касса Ferma: временно (FERMA_RECEIPT_TRIGGER=booking, только FERMA_MODE=test) — чек на стенд
+            // при создании заказа, чтобы посмотреть, что отправляется. Не ждёт и не бросает. docs/FERMA_API.md §7.
+            require('./lib/ferma/hooks').fireBookingReceipt({ source: 'lt', orderId: order_id, amount: paymentAmount, orderData });
+
             if (payload?.payUrl) {
                 try {
                     const { savePaymentToPackage } = require('./utils/orderPayment');
