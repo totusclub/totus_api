@@ -268,9 +268,27 @@ app.get('/references/flights_and_nights', async (req, res) => {
 
 
 
+// Прогретый кеш поиска (lib/searchCache.js, SEARCH_CACHE=on): форма по умолчанию для всех стран
+// ищется ночью, повторный поиск отдаётся из снимка сразу. Остальные поиски — как раньше, в LT.
+const { createSearchCache, buildGroupedHotelsParams } = require('./lib/searchCache');
+const LT_CACHE_TIMEOUT_MS = 30 * 1000;
+const searchCache = createSearchCache({
+    lt: {
+        enqueue: async (params) => (await axios.get(`${BASE_URL}/search/enqueue`, { params, headers: HEADERS, timeout: LT_CACHE_TIMEOUT_MS })).data,
+        status: async (request_id) => (await axios.get(`${BASE_URL}/search/status`, { params: { request_id }, headers: HEADERS, timeout: LT_CACHE_TIMEOUT_MS })).data,
+        grouped: async (params) => (await axios.get(`${BASE_URL}/search/get_grouped_hotels`, { params, headers: HEADERS, timeout: LT_CACHE_TIMEOUT_MS, paramsSerializer: { indexes: null } })).data,
+        destinations: async () => (await axios.get(`${BASE_URL}/references/destinations`, { headers: HEADERS, timeout: LT_CACHE_TIMEOUT_MS })).data,
+    },
+});
+
 app.get('/start-search', async (req, res) => {
     try {
         console.log(req.query)
+        const cached = searchCache.lookupStart(req.query);
+        if (cached) {
+            console.log(`[SEARCH-CACHE] hit start ${req.query.to_country} ${req.query.start_date}`);
+            return res.json(cached);
+        }
         const response = await axios.get(`${BASE_URL}/search/enqueue`, {
             params: req.query,
             headers: HEADERS,
@@ -380,6 +398,9 @@ app.get('/search-status', async (req, res) => {
             return res.status(400).json({ error: 'Missing request_id' });
         }
 
+        const cached = searchCache.lookupStatus(request_id);
+        if (cached) return res.json(cached);
+
         const response = await axios.get(`${BASE_URL}/search/status`, {
             params: { request_id },
             headers: HEADERS,
@@ -394,39 +415,18 @@ app.get('/search-status', async (req, res) => {
 
 app.get('/grouped-hotels', async (req, res) => {
     try {
-        const {
-            request_id,
-            operator_ids,
-            readyOperators,
-            ...rest
-        } = req.query;
-
-        if (!request_id) {
+        if (!req.query.request_id) {
             return res.status(400).json({ error: 'Missing request_id' });
         }
 
-        const params = { request_id };
-
-        // Level.Travel expects operator_ids; frontend may send readyOperators.
-        // Axios may deliver repeated keys as an array — always forward as CSV.
-        const rawOperatorIds = operator_ids || readyOperators;
-        if (rawOperatorIds !== undefined && rawOperatorIds !== null && rawOperatorIds !== '') {
-            params.operator_ids = Array.isArray(rawOperatorIds)
-                ? rawOperatorIds.map(String).filter(Boolean).join(',')
-                : String(rawOperatorIds);
-        }
-
-        const passthroughKeys = new Set(['page_limit', 'page_number', 'sort_by']);
-
-        for (const [key, value] of Object.entries(rest)) {
-            if (value === undefined || value === null || value === '') continue;
-            if (!key.startsWith('filter_') && !passthroughKeys.has(key)) continue;
-            // Amenity toggles are omit-when-off; only instant_confirm sends explicit false.
-            if (String(value) === 'false' && key !== 'filter_instant_confirm') continue;
-            params[key] = value;
-        }
+        // operator_ids / readyOperators → CSV, только filter_*, page_limit, page_number, sort_by
+        // (lib/searchCache.js — та же функция строит первую страницу при прогреве).
+        const params = buildGroupedHotelsParams(req.query);
 
         console.log('params', params);
+
+        const cached = searchCache.lookupGrouped(params);
+        if (cached) return res.json(cached);
 
         const response = await axios.get(`${BASE_URL}/search/get_grouped_hotels`, {
             params,
@@ -1678,6 +1678,8 @@ app.use('/api/admin/partner-requests', partnerRequestsAdminRoutes);
 const { publicRouter: fermaPublicRoutes, adminRouter: fermaAdminRoutes } = require('./routes/ferma.routes').buildFermaRoutes();
 app.use('/api/ferma', fermaPublicRoutes);
 app.use('/api/admin/fiscal', fermaAdminRoutes);
+// Кеш поиска: состояние и ручной прогрев (staff).
+app.use('/api/admin/search-cache', require('./routes/searchCache.routes').buildSearchCacheRoutes(searchCache));
 app.use('/api', homeBannersPublicRoutes);
 app.use('/api/admin', homeBannersAdminRoutes);
 app.use('/api', homePartnersPublicRoutes);
@@ -1702,4 +1704,5 @@ app.listen(PORT, () => {
     console.log(`[AUTH] mode=${authMode()} (AUTH_MODE=log|enforce), JWT_SECRET loaded: ${Boolean(process.env.JWT_SECRET)}, JWT_REFRESH_SECRET loaded: ${Boolean(process.env.JWT_REFRESH_SECRET)}`);
     console.log(`[CORS] origins: ${allowedOrigins().join(', ')}`);
     require('./lib/ferma').startFermaWorker();
+    searchCache.start();
 });
