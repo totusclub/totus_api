@@ -25,3 +25,6 @@ package-lock.json
 # В репозиторий не попадают никогда (SECURITY_AUDIT_2026-09_RU.md, К1).
 uploads/orders/
 !uploads/orders/.gitkeep
+
+# Снимки кеша поиска (lib/searchCache.js) — выдача LT, пересоздаются каждую ночь.
+var/

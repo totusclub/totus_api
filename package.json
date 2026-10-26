@@ -5,11 +5,12 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js && node scripts/check-cms-legal-pages.js && node scripts/check-user-orders-batch.js && node scripts/check-orders-list-view.js && node scripts/check-server-perf.js && node scripts/check-flights-list-view.js && node scripts/check-hero-mobile.js && node scripts/check-partner-requests.js && node scripts/check-consents.js && node scripts/check-ferma.js && node scripts/check-ferma-booking.js",
+    "check": "node --check app.js && node scripts/check-auth-core.js && node scripts/check-notify-hub.js && node scripts/check-custom-rooms.js && node scripts/check-custom-rooms-diag.js && node scripts/check-custom-rooms-live.js && node scripts/check-custom-rooms-orders.js && node scripts/check-custom-rooms-exclusive.js && node scripts/check-operators.js && node scripts/check-phone.js && node scripts/check-order-docs.js && node scripts/check-home-hero.js && node scripts/check-cms-legal-pages.js && node scripts/check-user-orders-batch.js && node scripts/check-orders-list-view.js && node scripts/check-server-perf.js && node scripts/check-flights-list-view.js && node scripts/check-hero-mobile.js && node scripts/check-partner-requests.js && node scripts/check-consents.js && node scripts/check-ferma.js && node scripts/check-ferma-booking.js && node scripts/check-search-cache.js",
     "check:order-docs": "node scripts/check-order-docs.js",
     "check:home-hero": "node scripts/check-home-hero.js",
     "check:ferma": "node scripts/check-ferma.js && node scripts/check-ferma-booking.js",
     "ferma:selftest": "node scripts/ferma-selftest.js",
+    "check:search-cache": "node scripts/check-search-cache.js",
     "patch:order-docs": "node scripts/patch-order-docs.js",
     "migrate:custom-rooms": "node scripts/run-custom-rooms-migration.js",
     "migrate:operators": "node scripts/run-operators-migration.js",
