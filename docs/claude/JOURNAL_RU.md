@@ -5,6 +5,26 @@
 
 ---
 
+## 26.10.2026 — чат «Totus Dev»: стенд тестирования приложения на Mac mini ([totus_APP #58](https://github.com/tosmedia/totus_APP/pull/58)), итоги стенда в ежечасном чекапе
+
+**Задача (владелец):** чтобы на Mac mini (всегда включён; решение — Mac mini M6, на время — Mac mini 2018 Intel) стоял тестировщик приложения через Maestro, и дать команду для Claude Code, которая его поставит.
+
+**Что сделано (ветка `claude/qa-mac-stand`, коммит `d4a08db`):**
+- `scripts/qa-mac/setup.sh` — установка стенда, повторный запуск безопасен, `--check` — только показать готовность: Homebrew-пакеты (git, gh, node@22, openjdk@17, watchman, cocoapods, android-commandlinetools), Maestro, Android SDK (platform-tools, emulator, platform 36, build-tools 36.0.0, NDK из `android/build.gradle`, образ Android 15 под процессор Mac), эмулятор `totus_android` (Pixel 7), симуляторы «Totus iPhone» и «Totus iPad» на свежей iOS, клон `totus_ai_v2` рядом (пакет Милы), проверки сна и автовхода, окружение `~/.totus-qa/env`; `--schedule HH:MM` — ежедневная launchd-задача `club.totus.qa-mac`. Что требует пароля или App Store (Homebrew, Xcode, `pmset`, автовход) — печатает списком.
+- `scripts/qa-mac/run.sh` — ежедневный прогон: `git pull` обоих репо → сборка Android из Git (`assembleRelease` под процессор Mac, иначе самый новый APK из `~/TotusBuilds`), iOS — из Git, когда появится `ios/totusClubApp.xcodeproj`, пока — готовая сборка для симулятора из `~/TotusBuilds` → по очереди эмулятор Android, iPhone, iPad без окон → сценарии `.maestro` → один `SUMMARY.md` → при падении разбор Claude Code (`claude -p`, только чтение) в `TRIAGE.md` → issue «QA приложения на Mac mini — последний прогон» (метка `qa-mac`) в totus_APP, при падении — комментарий; отчёты старше 30 дней удаляются. Данные приложения не стираются (вход QA-учёткой сохраняется), в приложение ничего не вводится.
+- `scripts/qa-mac/README_RU.md` — описание и **задание для Claude Code** (установка Claude Code → `cd ~/Totus && claude` → вставить задание).
+- `scripts/maestro-checkup.sh` — `--out DIR` (несколько устройств в один отчёт), `--tags`, скриншоты в папку прогона; `scripts/maestro-summary.mjs` — у упавшего сценария в «Причине» шаг из отметок Maestro (вместо «Unknown error»), «не проверено» для устройства без сборки, заголовок «ПРОВЕРЕНО ЧАСТИЧНО».
+- `check-maestro-flows` 39/39 (+ проверки стенда: скрипты исполняемые, `bash -n`, без стирания данных и ввода, разбор только на чтение, без токенов); `npm run check` зелёный; package.json не менялся; код приложения не менялся.
+- Ежечасная задача «Чекап сайта и приложений Totus Club» — новая часть 4: 14 — issue `qa-mac` (дата и итог последнего прогона стенда, упавшие сценарии; старше 26 ч — ⚠️; нет issue — ⚪), 15 — issue `qa-mobile` облачного CI (нет — ⚪). В GitHub чекап по-прежнему ничего не пишет.
+
+**Почему:** приложению нужен работающий симулятор / эмулятор; облако и Groover их не дают, симулятор iOS — только на Mac.
+
+**Как проверено:** `bash -n`, прогон `run.sh` и `maestro-checkup.sh` на заглушках (maestro, adb, emulator, xcrun, gh, claude), разбор отчёта на образцах отметок Maestro обоих форматов; на настоящем Mac не запускалось.
+
+**Что осталось:** слить #58 → на Mac mini Claude Code по заданию из README → Xcode из App Store, пароль в нескольких командах → сборка iOS для симулятора в `~/TotusBuilds` (пока в Git нет `ios/totusClubApp.xcodeproj`) → один раз войти QA-учёткой по почте на каждом устройстве стенда (вход через Яндекс ID из приложения убран, #53) и `QA_TAGS="daily,auth"`. Причина падения 02 на iPhone 17 (16.10) — увидим в первом прогоне стенда.
+
+---
+
 ## 21.10.2026 — чат «Totus Dev»: Ferma — чек на стенд при создании бронирования ([totus_API #43](https://github.com/tosmedia/totus_API/pull/43))
 
 **Задача (владелец):** временно пробивать чек в момент создания бронирования, посмотреть, что отправляется, потом перенести на «после оплаты». #42 слит и включён на сервере.
