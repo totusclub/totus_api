@@ -1,6 +1,13 @@
 # Прогретый кеш поиска туров
 
-**Обновлено:** 26.10.2026. PR — [totus_API #44](https://github.com/tosmedia/totus_API/pull/44), ждёт слияния и `SEARCH_CACHE=on`. Копия описания из `docs/SEARCH_CACHE_RU.md` в totus_API (ветка `claude/search-cache-warmup`).
+**Обновлено:** 27.10.2026. [totus_API #44](https://github.com/tosmedia/totus_API/pull/44) слит, на проде включён. Ниже — копия описания из `docs/SEARCH_CACHE_RU.md` в totus_API.
+
+## Состояние на 27.10.2026
+
+- Ночной прогрев 27.10 прошёл в 00:05–00:08 МСК. Снимок есть у 32 из 57 стран — у тех, где на 03.11 есть туры из Москвы.
+- Повторный поиск Москва → Египет — 0,26 с: `/start-search` 74 мс, `/search-status` 63 мс, первая страница 124 мс. Все операторы в итоговом статусе, 320 отелей.
+- Фоновое обновление работает: `cached_at` 13:57 → 14:07 UTC, примерно через 30 с после запроса.
+- Каждый час механизм проверяет запланированная задача «Чекап сайта и приложений Totus Club», часть 5 (16–18): прогрев, скорость, свежесть, цена из кеша против живой. Подробно — `claude/CHECKUP_RU.md`.
 
 Код — `lib/searchCache.js`, маршруты — `/start-search`, `/search-status`, `/grouped-hotels` в `app.js`, админка — `routes/searchCache.routes.js`, проверка — `scripts/check-search-cache.js` (входит в `npm run check`).
 
