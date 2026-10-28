@@ -9,7 +9,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 const {
-    loadConfig, createSearchCache, searchKey, buildGroupedHotelsParams, variantKey, moscowDate, msUntilMoscowTime,
+    loadConfig, createSearchCache, searchKey, buildGroupedHotelsParams, variantKey, moscowDate, msUntilMoscowTime, msUntilNextRun,
 } = require(path.join(root, 'lib/searchCache'));
 
 let passed = 0;
@@ -155,6 +155,18 @@ test('дата и время прогрева считаются по Москв
     assert.deepStrictEqual(loadConfig({ SEARCH_CACHE_COUNTRIES: 'eg, TR,xx1,' }).countries, ['EG', 'TR']);
 });
 
+test('прогрев каждый час в :05 по Москве (SEARCH_CACHE_EVERY_MINUTES=60 по умолчанию)', () => {
+    assert.strictEqual(loadConfig({}).everyMinutes, 60);
+    assert.strictEqual(loadConfig({ SEARCH_CACHE_EVERY_MINUTES: '1440' }).everyMinutes, 1440);
+    assert.strictEqual(loadConfig({ SEARCH_CACHE_EVERY_MINUTES: '1' }).everyMinutes, 10, 'не чаще раза в 10 минут');
+    const min = 60 * 1000;
+    assert.strictEqual(msUntilNextRun(Date.parse('2026-10-28T11:20:00Z'), 0, 5, 60), 45 * min); // 14:20 МСК → 15:05
+    assert.strictEqual(msUntilNextRun(Date.parse('2026-10-28T11:05:00Z'), 0, 5, 60), 60 * min); // ровно 14:05 → 15:05
+    assert.strictEqual(msUntilNextRun(Date.parse('2026-10-28T20:59:00Z'), 0, 5, 60), 6 * min); // 23:59 → 00:05
+    assert.strictEqual(msUntilNextRun(Date.parse('2026-10-28T21:01:00Z'), 0, 5, 60), 4 * min); // 00:01 → 00:05
+    assert.strictEqual(msUntilNextRun(Date.parse('2026-10-28T11:20:00Z'), 0, 5, 1440), msUntilMoscowTime(Date.parse('2026-10-28T11:20:00Z'), 0, 5));
+});
+
 // ---------- прогрев и выдача из снимка ----------
 
 async function warmed({ results = { EG: 120, TR: 1459, TN: 0 }, env = ON, persist = false, dir } = {}) {
@@ -293,6 +305,58 @@ test('в снимке нет личных данных: только парам�
     assert.ok(!JSON.stringify(info).includes('hotels":['), 'в админке нет самой выдачи');
 });
 
+test('ежечасный прогрев: только что обновлённые страны не ищет повторно, пустые ищет', async () => {
+    const { c, lt, cache } = await warmed();
+    const n0 = lt.calls.enqueue;
+    c.add(5 * 60 * 1000);
+    const s1 = await cache.warmAll('прогрев по расписанию');
+    assert.strictEqual(lt.calls.enqueue - n0, 1, 'через 5 мин — только страна без туров');
+    assert.strictEqual(s1.skippedFresh, 2);
+    assert.strictEqual(s1.withHotels, 2);
+    c.add(60 * 60 * 1000);
+    await cache.warmAll('прогрев по расписанию');
+    assert.strictEqual(lt.calls.enqueue - n0, 4, 'через час — все страны');
+});
+
+test('сводка: обновлённые, без туров и не обновлённые с причиной', async () => {
+    const results = { EG: 120, TR: 1459, TN: 0 };
+    const c = clock('2026-10-28T11:05:00Z');
+    const lt = fakeLt({ results });
+    const cache = createSearchCache({ lt, config: loadConfig(ON), now: c.now, wait: c.wait, log: quiet, persist: false });
+    await cache.warmAll('прогрев по расписанию');
+    let s = cache.summary();
+    assert.strictEqual(s.schedule, 'каждый час в :05 МСК');
+    assert.strictEqual(s.date, '2026-11-04');
+    assert.deepStrictEqual([s.countries, s.updated], [3, 2]);
+    assert.deepStrictEqual(s.no_tours.map((r) => r.iso2), ['TN']);
+    assert.deepStrictEqual(s.not_updated, []);
+    assert.ok(s.last_run && s.last_run.started_at);
+    // LT упал на следующем прогоне — все три не обновлены, с текстом ошибки
+    lt.down = true;
+    c.add(61 * 60 * 1000);
+    await cache.warmAll('прогрев по расписанию');
+    s = cache.summary();
+    assert.strictEqual(s.updated, 0);
+    assert.deepStrictEqual(s.not_updated.map((r) => `${r.iso2}:${r.state}`), ['EG:error', 'TN:error', 'TR:error']);
+    assert.match(s.not_updated[0].error, /LT недоступен/);
+    assert.ok(cache.lookupStart(webStart('2026-11-04')), 'прежний снимок Египта отдаётся');
+    // LT снова жив, но по Египту ничего не нашёл — прежний снимок оставлен, страна в списке «не обновлены»
+    lt.down = false;
+    results.EG = 0;
+    c.add(61 * 60 * 1000);
+    await cache.warmAll('прогрев по расписанию');
+    s = cache.summary();
+    assert.deepStrictEqual(s.not_updated.map((r) => `${r.iso2}:${r.state}`), ['EG:kept']);
+    assert.strictEqual(s.updated, 1);
+    // Прогрев не запускался больше часа — всё «устарело»
+    results.EG = 120;
+    await cache.warmAll('прогрев по расписанию');
+    c.add(80 * 60 * 1000);
+    s = cache.summary();
+    assert.deepStrictEqual(s.not_updated.map((r) => `${r.iso2}:${r.state}:${r.age_minutes}`), ['EG:stale:80', 'TN:stale:80', 'TR:stale:80']);
+    assert.ok(!/min_price|"hotels":\[/.test(JSON.stringify(s)), 'в сводке нет выдачи и цен');
+});
+
 // ---------- подключение ----------
 
 test('app.js: кеш в /start-search, /search-status, /grouped-hotels, запуск и админка', () => {
@@ -304,8 +368,13 @@ test('app.js: кеш в /start-search, /search-status, /grouped-hotels, запу
     assert.doesNotMatch(app, /const passthroughKeys/, 'параметры выдачи строятся в одном месте');
     assert.match(app, /searchCache\.start\(\)/);
     assert.match(app, /\/api\/admin\/search-cache/);
+    assert.match(app, /app\.use\('\/api\/search-cache', require\('\.\/routes\/searchCache\.routes'\)\.buildSearchCachePublicRoutes\(searchCache\)\)/);
     const routes = read('routes/searchCache.routes.js');
     assert.match(routes, /router\.use\(requireStaff\)/);
+    const pub = routes.slice(routes.indexOf('function buildSearchCachePublicRoutes'), routes.indexOf('function buildSearchCacheRoutes'));
+    assert.match(pub, /router\.get\('\/summary'/);
+    assert.doesNotMatch(pub, /requireStaff/, 'сводка доступна чекапу без входа');
+    assert.match(pub, /searchCache\.summary\(\)/, 'наружу — только сводка, без выдачи');
     assert.match(read('.gitignore'), /^var\/$/m);
     assert.match(read('.env.example'), /^SEARCH_CACHE=off$/m);
 });

@@ -1,9 +1,21 @@
 const express = require('express');
 const { requireStaff } = require('../middleware/authJwt');
 
-// Кеш поиска LT (lib/searchCache.js) — только для сотрудников:
+// Кеш поиска LT (lib/searchCache.js).
+// Публично (для ежечасного чекапа, без выдачи и цен):
+//   GET  /api/search-cache/summary        — какие направления обновлены за последний прогон, какие нет и почему
+// Только для сотрудников:
 //   GET  /api/admin/search-cache          — что прогрето: страны, дата вылета, число отелей, возраст снимка
 //   POST /api/admin/search-cache/warmup   — прогреть сейчас (в фоне, ответ сразу)
+function buildSearchCachePublicRoutes(searchCache) {
+    const router = express.Router();
+    router.get('/summary', (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, ...searchCache.summary() });
+    });
+    return router;
+}
+
 function buildSearchCacheRoutes(searchCache) {
     const router = express.Router();
     router.use(requireStaff);
@@ -24,4 +36,4 @@ function buildSearchCacheRoutes(searchCache) {
     return router;
 }
 
-module.exports = { buildSearchCacheRoutes };
+module.exports = { buildSearchCacheRoutes, buildSearchCachePublicRoutes };

@@ -1678,7 +1678,8 @@ app.use('/api/admin/partner-requests', partnerRequestsAdminRoutes);
 const { publicRouter: fermaPublicRoutes, adminRouter: fermaAdminRoutes } = require('./routes/ferma.routes').buildFermaRoutes();
 app.use('/api/ferma', fermaPublicRoutes);
 app.use('/api/admin/fiscal', fermaAdminRoutes);
-// Кеш поиска: состояние и ручной прогрев (staff).
+// Кеш поиска: сводка по направлениям (публично, без выдачи), состояние и ручной прогрев (staff).
+app.use('/api/search-cache', require('./routes/searchCache.routes').buildSearchCachePublicRoutes(searchCache));
 app.use('/api/admin/search-cache', require('./routes/searchCache.routes').buildSearchCacheRoutes(searchCache));
 app.use('/api', homeBannersPublicRoutes);
 app.use('/api/admin', homeBannersAdminRoutes);
