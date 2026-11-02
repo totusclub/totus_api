@@ -82,6 +82,12 @@ const {
     pickFlightPair,
     firstQueryValue,
 } = require('./utils/ltPackageProxy');
+// Поиск: таймауты и ошибки /start-search, /search-status, /grouped-hotels (HOTEL_SEARCH_PROGRESSIVE, 02.11.2026).
+const {
+    LT_SEARCH_TIMEOUT_MS,
+    searchErrorResponse,
+    searchLogLine,
+} = require('./utils/ltSearchProxy');
 
 const HEADERS = getLtHeaders('3.7');
 const HEADERS_3_8 = getLtHeaders('3.8');
@@ -289,15 +295,22 @@ app.get('/start-search', async (req, res) => {
             console.log(`[SEARCH-CACHE] hit start ${req.query.to_country} ${req.query.start_date}`);
             return res.json(cached);
         }
-        const response = await axios.get(`${BASE_URL}/search/enqueue`, {
-            params: req.query,
-            headers: HEADERS,
-        });
-        res.json(response.data);
+        const startedAt = Date.now();
+        try {
+            const response = await axios.get(`${BASE_URL}/search/enqueue`, {
+                params: req.query,
+                headers: HEADERS,
+                timeout: LT_SEARCH_TIMEOUT_MS.enqueue,
+            });
+            res.json(response.data);
+        } catch (error) {
+            // Прежнее поле error + code / message / status / lt (utils/ltSearchProxy.js).
+            const { status, body } = searchErrorResponse(error, 'Failed to start search');
+            console.error(searchLogLine('start failed', req.query, startedAt, `${body.code} status=${status} ${body.message}`));
+            res.status(status).json(body);
+        }
     } catch (error) {
-
-        console.log({...error.message})
-        // console.error('Error starting search:', error.message);
+        console.error('Error starting search:', error && error.message);
         res.status(500).json({ error: 'Failed to start search' });
     }
 });
@@ -401,14 +414,21 @@ app.get('/search-status', async (req, res) => {
         const cached = searchCache.lookupStatus(request_id);
         if (cached) return res.json(cached);
 
-        const response = await axios.get(`${BASE_URL}/search/status`, {
-            params: { request_id },
-            headers: HEADERS,
-        });
-
-        res.json(response.data);
+        const startedAt = Date.now();
+        try {
+            const response = await axios.get(`${BASE_URL}/search/status`, {
+                params: { request_id },
+                headers: HEADERS,
+                timeout: LT_SEARCH_TIMEOUT_MS.status,
+            });
+            res.json(response.data);
+        } catch (error) {
+            const { status, body } = searchErrorResponse(error, 'Failed to check status');
+            console.error(searchLogLine('status failed', req.query, startedAt, `${body.code} status=${status} ${body.message}`));
+            res.status(status).json(body);
+        }
     } catch (error) {
-        console.error('Error checking status:', error.message);
+        console.error('Error checking status:', error && error.message);
         res.status(500).json({ error: 'Failed to check status' });
     }
 });
@@ -431,6 +451,7 @@ app.get('/grouped-hotels', async (req, res) => {
         const response = await axios.get(`${BASE_URL}/search/get_grouped_hotels`, {
             params,
             headers: HEADERS,
+            timeout: LT_SEARCH_TIMEOUT_MS.grouped,
             paramsSerializer: {
                 // Keep CSV filter values (e.g. filter_stars=3,4,5) as a single param.
                 indexes: null,
@@ -440,6 +461,11 @@ app.get('/grouped-hotels', async (req, res) => {
         res.json(response.data);
     } catch (error) {
         logLtError('Error getting grouped hotels:', error, { query: req.query });
+        // Таймаут — 504 с code (раньше тот же 504 давал nginx через 60 с); остальное — как раньше, тело LT.
+        if (isTimeoutError(error)) {
+            const { status, body } = ltStepErrorResponse(error, 'Failed to get grouped hotels');
+            return res.status(status).json(body);
+        }
         return sendLtAxiosError(res, error, 'Failed to get grouped hotels');
     }
 });
