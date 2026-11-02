@@ -67,14 +67,21 @@ async function handle(req, res, next) {
     const path = req.path || '';
     const q = req.query || {};
 
-    // /start-search: запоминаем тип поиска по request_id (нужен для /hotels-rooms)
+    // /start-search: запоминаем тип поиска по request_id (нужен для /hotels-rooms).
+    // Запись в БД — без ожидания (план HOTEL_SEARCH_PROGRESSIVE, 02.11.2026): ответ поиска уходит клиенту
+    // сразу, а /hotels-rooms вызывается намного позже (страница отеля). Ошибка записи — только в лог.
     if (method === 'GET' && path === '/start-search') {
         const st = searchTypeOf(q);
         diag.bump('startSearchSeen', { lastStartSearchAt: new Date().toISOString() });
-        wrapJson(res, async (body) => {
+        wrapJson(res, (body) => {
             const rid = body && (body.request_id || (body.search && body.search.request_id) || body.id);
-            if (rid) await store.rememberSearch(rid, st || 'package', { from_city: q.from_city, to_country: q.to_country, start_date: q.start_date, nights: q.nights, adults: q.adults, kids: q.kids });
-            else diag.log(`start-search: no request_id in LT response (keys: ${Object.keys(body || {}).join(',')})`);
+            if (rid) {
+                Promise.resolve()
+                    .then(() => store.rememberSearch(rid, st || 'package', { from_city: q.from_city, to_country: q.to_country, start_date: q.start_date, nights: q.nights, adults: q.adults, kids: q.kids }))
+                    .catch((e) => diag.error(`start-search: rememberSearch failed for ${rid}`, e));
+            } else {
+                diag.log(`start-search: no request_id in LT response (keys: ${Object.keys(body || {}).join(',')})`);
+            }
             return body;
         });
         return next();
