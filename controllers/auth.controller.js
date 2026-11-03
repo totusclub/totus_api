@@ -12,6 +12,13 @@ const auth = require('../lib/auth');
 const APPLE_DEMO_EMAIL = 'test@totus.com';
 const APPLE_DEMO_CODE = '1111';
 
+// Новый пользователь сразу получает Calling (чат и звонок в поддержку) и AI (Мила):
+// users.access = 0 — «Доступ» в Calling Admin; 1 — «Заблок.»; NULL calling_api_v2
+// (GET /api/users/by-id) считает заблокированным, поэтому значение пишем явно.
+// Только для обычных пользователей: вход в панель оператора дополнительно требует role = 'agent'.
+// Приложение и сайт читают флаг из calling_api_v2 — их менять не нужно (решение владельца 03.11.2026).
+const NEW_USER_ACCESS = 0;
+
 const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
 
 function normalizeEmail(email = '') {
@@ -128,8 +135,8 @@ exports.signup = async (req, res) => {
         const [user] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         if (user.length) return res.status(400).json({ message: 'Email already exists' });
         const [ins] = await db.query(
-            'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, lName, email, phone, code, codeLoyalty]
+            'INSERT INTO users (name, l_name, email, phone, code, loyalty_id, access) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [name, lName, email, phone, code, codeLoyalty, NEW_USER_ACCESS]
         );
         createdUserId = ins?.insertId ?? null;
 
@@ -169,8 +176,8 @@ exports.verifyCode = async (req, res) => {
             if (users.length === 0) {
                 const codeLoyalty = generateUniqueLoyaltyId();
                 await db.query(
-                    'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
-                    ['Apple', 'Reviewer', email, null, APPLE_DEMO_CODE, codeLoyalty]
+                    'INSERT INTO users (name, l_name, email, phone, code, loyalty_id, access) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    ['Apple', 'Reviewer', email, null, APPLE_DEMO_CODE, codeLoyalty, NEW_USER_ACCESS]
                 );
                 const [created] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
                 users = created;
@@ -207,8 +214,8 @@ exports.signin = async (req, res) => {
         if (!user && isAppleDemoEmail(email)) {
             const codeLoyalty = generateUniqueLoyaltyId();
             await db.query(
-                'INSERT INTO users (name, l_name, email, phone, code, loyalty_id) VALUES (?, ?, ?, ?, ?, ?)',
-                ['Apple', 'Reviewer', email, null, code, codeLoyalty]
+                'INSERT INTO users (name, l_name, email, phone, code, loyalty_id, access) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                ['Apple', 'Reviewer', email, null, code, codeLoyalty, NEW_USER_ACCESS]
             );
             const [created] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
             user = created[0];
