@@ -240,7 +240,7 @@ test('Подключено в /create-package LT: после записи зак
     assert(call > h.indexOf('const paymentAmount'), 'после расчёта суммы');
     assert(call < h.indexOf('res.json(response.data)'), 'до ответа');
     assert(!/await\s+require\('\.\/lib\/ferma\/hooks'\)/.test(h), 'не ждём кассу');
-    assert.strictEqual((app.match(/lib\/ferma\/hooks/g) || []).length, 1, 'в app.js — один вызов');
+    assert.strictEqual((app.match(/fireBookingReceipt/g) || []).length, 1, 'в app.js — один вызов чека при бронировании');
 });
 
 test('Подключено в бронировании Arlekino: после создания заказа, без await', () => {
@@ -252,16 +252,18 @@ test('Подключено в бронировании Arlekino: после со
     assert(!/await\s+require\('\.\.\/ferma\/hooks'\)/.test(src));
 });
 
-test('Оплата ВТБ / check_pay пока не трогают кассу', () => {
+// 05.11.2026: оплата ВТБ / check_pay вызывают только чек после оплаты (firePaymentReceipt), не чек при бронировании.
+test('Оплата ВТБ / check_pay: только чек после оплаты, без чека при бронировании', () => {
     for (const f of ['utils/vtbCallback.js', 'lib/customRooms/bookings.js']) {
         if (!fs.existsSync(path.join(root, f))) continue;
-        assert(!/ferma/i.test(read(f)), `${f} не вызывает кассу`);
+        assert(!/fireBookingReceipt/.test(read(f)), `${f} не вызывает чек при бронировании`);
     }
     const app = read('app.js');
     const cp = app.indexOf("app.post('/check_pay'");
     if (cp > 0) {
         const next = app.indexOf('app.', cp + 20);
-        assert(!/ferma/i.test(app.slice(cp, next > cp ? next : cp + 4000)), '/check_pay не вызывает кассу');
+        const h = app.slice(cp, next > cp ? next : cp + 4000);
+        assert(!/fireBookingReceipt/.test(h), '/check_pay не вызывает чек при бронировании');
     }
 });
 
