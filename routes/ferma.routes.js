@@ -1,10 +1,11 @@
 const express = require('express');
-const { createFermaController } = require('../controllers/ferma.controller');
+const { createFermaController, createOrderSupplierController } = require('../controllers/ferma.controller');
 const { getFerma } = require('../lib/ferma');
 const { requireStaff } = require('../middleware/authJwt');
 
-function buildFermaRoutes(getDeps = getFerma) {
+function buildFermaRoutes(getDeps = getFerma, supplierDeps = {}) {
     const c = createFermaController(getDeps);
+    const os = createOrderSupplierController(supplierDeps);
 
     // Mounted at /api/ferma — callback от Ferma (секрет в пути, без входа)
     const publicRouter = express.Router();
@@ -28,6 +29,10 @@ function buildFermaRoutes(getDeps = getFerma) {
     adminRouter.post('/reconcile', c.reconcile);
     adminRouter.get('/registry', c.registry);
     adminRouter.post('/selftest', c.selftest);
+    // Поставщик чека по каждому заказу и оплаты без чека (только чтение)
+    adminRouter.get('/order-suppliers', os.orderSuppliers);
+    adminRouter.get('/orders/:orderId/supplier', os.orderSupplier);
+    adminRouter.get('/blocked', os.blocked);
 
     return { publicRouter, adminRouter };
 }

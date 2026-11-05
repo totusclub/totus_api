@@ -299,4 +299,91 @@ function createFermaController(getDeps) {
     };
 }
 
-module.exports = { createFermaController, resolveTestInput, isFermaIp, FERMA_CALLBACK_NETS };
+/**
+ * Поставщики заказов и «оплата есть — чека нет» (только чтение, staff).
+ *   GET /api/admin/fiscal/order-suppliers?status=ok|missing|invalid&operatorId=&limit=&offset=
+ *   GET /api/admin/fiscal/orders/:orderId/supplier — сохранённые реквизиты, реквизиты в заказе сейчас, можно ли пробить
+ *   GET /api/admin/fiscal/blocked?all=1&mode=&orderId=&limit=&offset= — оплаты, по которым чек не пробит, и причина
+ * deps — для проверок: supplierStore, blockedStore, loadOrder, getSuppliers.
+ */
+function createOrderSupplierController(deps = {}) {
+    const OS = require('../lib/ferma/orderSupplier');
+    const hooks = require('../lib/ferma/hooks');
+    const supplierStore = () => deps.supplierStore || OS.getSupplierStore();
+    const blockedStore = () => deps.blockedStore || OS.getBlockedStore();
+    const loadOrder = deps.loadOrder || hooks.loadPaidOrder;
+    const getSuppliers = deps.getSuppliers || (() => process.env.FERMA_SUPPLIERS);
+    const handle = (fn) => async (req, res) => {
+        try { await fn(req, res); } catch (err) { sendError(res, err); }
+    };
+    const page = (q) => ({
+        limit: Math.min(Math.max(parseInt(q.limit, 10) || 50, 1), 200),
+        offset: Math.max(parseInt(q.offset, 10) || 0, 0),
+    });
+    const view = (snap) => (snap ? {
+        orderId: snap.order_id,
+        operator: { id: snap.operator_id, name: snap.operator_name },
+        supplier: snap.supplier_inn || snap.supplier_name ? { inn: snap.supplier_inn, name: snap.supplier_name, phone: snap.supplier_phone } : null,
+        status: snap.status,
+        problems: snap.problems,
+        message: snap.status === 'ok' ? null : OS.describeSnapshot(snap),
+        origin: snap.origin,
+        capturedAt: snap.captured_at || null,
+    } : null);
+
+    return {
+        orderSuppliers: handle(async (req, res) => {
+            const status = req.query.status ? String(req.query.status) : undefined;
+            if (status && !OS.STATUSES.includes(status)) return res.status(400).json({ error: 'invalid_status', allowed: OS.STATUSES });
+            const { rows, total } = await supplierStore().list({ status, operatorId: req.query.operatorId, ...page(req.query) });
+            res.json({ total, items: rows.map(view) });
+        }),
+
+        orderSupplier: handle(async (req, res) => {
+            const orderId = String(req.params.orderId || '');
+            if (!/^[A-Za-z0-9_.]{1,40}$/.test(orderId)) return res.status(400).json({ error: 'invalid_order_id' });
+            const order = await loadOrder(orderId);
+            const blocked = (await blockedStore().list({ open: false, orderId, limit: 20 })).rows;
+            if (order.source === 'arlekino') {
+                const sup = hooks.resolveSupplier({ mode: 'live', source: 'arlekino', suppliers: getSuppliers() });
+                return res.json({
+                    orderId, source: 'arlekino',
+                    canIssue: Boolean(sup.supplier), error: sup.supplier ? null : sup.code, message: sup.supplier ? null : sup.message,
+                    supplier: sup.supplier || null, supplierSource: 'FERMA_SUPPLIERS.arlekino', blocked,
+                });
+            }
+            if (!order.orderData) return res.status(404).json({ error: 'order_not_found', message: `Заказ ${orderId} не найден` });
+            const saved = await supplierStore().get(orderId);
+            // Что в заказе сейчас (только для сравнения, не сохраняется).
+            const fromOrder = OS.buildSnapshot(orderId, order.orderData, 'lt_order_package');
+            const check = OS.evaluateSnapshot(saved || fromOrder, order.orderData, orderId);
+            res.json({
+                orderId, source: 'lt',
+                canIssue: Boolean(check.supplier),
+                error: check.error || null,
+                message: check.message || null,
+                saved: view(saved),
+                inOrderNow: view(fromOrder),
+                blocked,
+            });
+        }),
+
+        blocked: handle(async (req, res) => {
+            const open = !(req.query.all === '1' || req.query.all === 'true');
+            const { rows, total } = await blockedStore().list({
+                open, mode: req.query.mode ? String(req.query.mode) : undefined,
+                orderId: req.query.orderId ? String(req.query.orderId) : undefined, ...page(req.query),
+            });
+            res.json({
+                total,
+                items: rows.map((r) => ({
+                    orderId: r.order_id, kind: r.kind, mode: r.mode, source: r.source, reason: r.reason, message: r.message,
+                    via: r.via, amount: r.amount_kop != null ? R.rub(Number(r.amount_kop)) : null, attempts: r.attempts,
+                    firstAt: r.first_at, lastAt: r.last_at, resolvedAt: r.resolved_at, receiptId: r.receipt_id,
+                })),
+            });
+        }),
+    };
+}
+
+module.exports = { createFermaController, createOrderSupplierController, resolveTestInput, isFermaIp, FERMA_CALLBACK_NETS };

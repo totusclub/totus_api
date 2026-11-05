@@ -25,18 +25,42 @@ const { loadConfig, publicConfig } = require(path.join(root, 'lib/ferma/config')
 const hooks = require(path.join(root, 'lib/ferma/hooks'));
 const { createMemoryStore } = require(path.join(root, 'lib/ferma/store'));
 const { createService, TEST_SUPPLIER } = require(path.join(root, 'lib/ferma/service'));
+const OS = require(path.join(root, 'lib/ferma/orderSupplier'));
+
+// Поставщик тура — из заказа (order_suppliers в памяти), журнал «чек не пробит» — в памяти. БД не трогаем.
+function memSupplierDeps() {
+    const store = OS.createMemorySupplierStore();
+    const blocked = OS.createMemoryBlockedStore();
+    return {
+        store, blocked,
+        resolveOrderSupplier: (orderId, orderData) => OS.resolveLtOrderSupplier(orderId, orderData, { store, log: () => {} }),
+    };
+}
+const H = (deps = {}) => {
+    const m = memSupplierDeps();
+    return hooks.createPaymentHook({ resolveOrderSupplier: m.resolveOrderSupplier, blocked: m.blocked, ...deps });
+};
 
 // Настоящие ИНН с верными контрольными цифрами (ООО «ТОТУСКЛАБ» и пример туроператора для проверки формата).
 const OP_SUPPLIER = { inn: '7707083893', name: 'ООО "Туроператор Пример"', phone: '8 (495) 000-00-01' };
+const ANEX = { inn: '7743184470', name: 'ООО "Анекс Туризм"', phone: '+78007755000' };
+const LT_ORDER_NO_ORG = (() => {
+    const o = JSON.parse(JSON.stringify({ id: 123456790, full_price: 99000, operator: { id: 33, name: 'Coral Travel' },
+        client: { email: 'ivan.petrov@mail.ru' }, _customer_email: 'ivan.petrov@mail.ru' }));
+    return o;
+})();
 const ARL_SUPPLIER = { inn: '9729424935', name: 'ООО "Продавец размещения"', phone: '+7 495 000-00-02' };
 
 const LT_ORDER = {
     id: 123456789,
     full_price: 152340,
-    operator: { id: 33, name: 'Coral Travel' },
+    operator: { id: 6, name: 'Anex' },
+    operator_organization: { name: "ООО 'Анекс Туризм '", inn: '7743184470', phone: '+7(800) 775-5000' },
     package: {
         hotel: { name: 'Rixos Sungate', city: { name_ru: 'Кемер' } },
         dates_info: { start_date: '2026-11-20', nights_count: 7 },
+        operator: { id: 6, name: 'Anex' },
+        operator_organization: { name: "ООО 'Анекс Туризм '", inn: '7743184470', phone: '+7(800) 775-5000' },
     },
     client: { name: 'Иван', email: 'ivan.petrov@mail.ru', phone: '79161234567' },
     _customer_email: 'ivan.petrov@mail.ru', _customer_phone: '79161234567',
@@ -92,7 +116,7 @@ test('Триггер не payment (off / booking / не задан) — касс
         setEnv({ FERMA_RECEIPT_TRIGGER: trig });
         const f = stubFerma();
         let loaded = 0;
-        const r = await hooks.createPaymentHook({ getFerma: f.getFerma, defer: now, log: () => {}, loadOrder: async () => { loaded++; return {}; } })({ orderId: 1, amount: 1, via: 'vtb_callback' });
+        const r = await H({ getFerma: f.getFerma, defer: now, log: () => {}, loadOrder: async () => { loaded++; return {}; } })({ orderId: 1, amount: 1, via: 'vtb_callback' });
         assert.deepStrictEqual(r, { skipped: 'trigger_off' }, `trigger=${trig}`);
         assert.strictEqual(f.calls.length + loaded, 0);
     }
@@ -101,10 +125,10 @@ test('Триггер не payment (off / booking / не задан) — касс
 
 test('FERMA_MODE=off или касса не настроена — пропуск, оплата не страдает', async () => {
     setEnv({ FERMA_MODE: 'off' });
-    let r = await hooks.createPaymentHook({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({ orderId: 1 });
+    let r = await H({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({ orderId: 1 });
     assert.deepStrictEqual(r, { skipped: 'mode_off' });
     setEnv({ FERMA_LOGIN: undefined });
-    r = await hooks.createPaymentHook({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({ orderId: 1 });
+    r = await H({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({ orderId: 1 });
     assert.deepStrictEqual(r, { skipped: 'not_configured' });
     setEnv();
 });
@@ -113,7 +137,7 @@ test('test: тур оплачен — чек в фоне, сумма из бан
     const f = stubFerma();
     const deferred = [];
     const logs = [];
-    const p = hooks.createPaymentHook({ getFerma: f.getFerma, defer: (fn) => deferred.push(fn), log: (m) => logs.push(m), loadOrder: ltOrder() })(
+    const p = H({ getFerma: f.getFerma, defer: (fn) => deferred.push(fn), log: (m) => logs.push(m), loadOrder: ltOrder() })(
         { orderId: 123456789, amount: 152000.5, transactionId: 'A123', via: 'vtb_callback' });
     assert.strictEqual(f.calls.length, 0, 'ответ банку не ждёт кассу');
     await deferred[0]();
@@ -140,31 +164,38 @@ test('Сумма: банк не прислал — берётся сумма з�
     assert.strictEqual(hooks.paymentReceiptInput({ mode: 'test', source: 'lt', orderId: 'ORDER-1/2', amount: 1 }).skip, 'invalid_order_id');
 });
 
-test('live без FERMA_SUPPLIERS — боевой чек НЕ пробивается, причина в логе', async () => {
-    setEnv({ ...LIVE_ENV });
+test('live: в заказе нет реквизитов туроператора — чек НЕ пробивается, причина в логе и в fiscal_blocked', async () => {
+    setEnv({ ...LIVE_ENV, FERMA_SUPPLIERS: JSON.stringify({ lt: OP_SUPPLIER, 'lt:33': OP_SUPPLIER }) });
     const f = stubFerma();
     const logs = [];
-    const r = await hooks.createPaymentHook({ getFerma: f.getFerma, defer: now, log: (m) => logs.push(m), loadOrder: ltOrder(), getSuppliers: () => undefined })(
-        { orderId: 123456789, amount: 152340, via: 'check_pay' });
-    assert.deepStrictEqual(r, { skipped: 'no_supplier:lt:33' });
-    assert.strictEqual(f.calls.length, 0);
-    assert(/чек НЕ пробит: no_supplier:lt:33/.test(logs[0]), logs[0]);
+    const m = memSupplierDeps();
+    const r = await hooks.createPaymentHook({ getFerma: f.getFerma, defer: now, log: (x) => logs.push(x), loadOrder: ltOrder(LT_ORDER_NO_ORG),
+        resolveOrderSupplier: m.resolveOrderSupplier, blocked: m.blocked })({ orderId: 123456790, amount: 99000, via: 'check_pay' });
+    assert.deepStrictEqual(r, { skipped: 'supplier_missing' });
+    assert.strictEqual(f.calls.length, 0, 'FERMA_SUPPLIERS lt / lt:33 не подставляются');
+    assert(/чек НЕ пробит: supplier_missing — Заказ 123456790: туроператор «Coral Travel» \(id 33\) — Level.Travel не передал реквизиты/.test(logs[0]), logs[0]);
+    const b = (await m.blocked.list({})).rows;
+    assert.strictEqual(b.length, 1);
+    assert.strictEqual(b[0].reason, 'supplier_missing');
+    assert.strictEqual(b[0].amount_kop, 9900000);
+    assert(!/ivan|7916/.test(JSON.stringify(b)), 'в журнале нет контактов покупателя');
     setEnv();
 });
 
-test('live: туроператор из FERMA_SUPPLIERS по operator_id, почта и телефон покупателя', async () => {
+test('live: туроператор — из реквизитов ЭТОГО заказа (FERMA_SUPPLIERS lt игнорируется), почта и телефон покупателя', async () => {
     setEnv({ ...LIVE_ENV });
     const f = stubFerma();
-    const suppliers = JSON.stringify({ 'lt:33': OP_SUPPLIER, arlekino: ARL_SUPPLIER });
-    await hooks.createPaymentHook({ getFerma: f.getFerma, defer: now, log: () => {}, loadOrder: ltOrder(), getSuppliers: () => suppliers })(
-        { orderId: 123456789, amount: 152340, via: 'check_pay' });
+    const suppliers = JSON.stringify({ lt: OP_SUPPLIER, 'lt:6': OP_SUPPLIER, arlekino: ARL_SUPPLIER });
+    const m = memSupplierDeps();
+    await hooks.createPaymentHook({ getFerma: f.getFerma, defer: now, log: () => {}, loadOrder: ltOrder(), getSuppliers: () => suppliers,
+        resolveOrderSupplier: m.resolveOrderSupplier, blocked: m.blocked })({ orderId: 123456789, amount: 152340, via: 'check_pay' });
     const { input } = f.calls[0];
-    assert.deepStrictEqual(input.supplier, { inn: '7707083893', name: 'ООО "Туроператор Пример"', phone: '8 (495) 000-00-01' });
+    assert.deepStrictEqual(input.supplier, ANEX, 'реквизиты Anex из заказа, не из FERMA_SUPPLIERS');
     assert.strictEqual(input.email, 'ivan.petrov@mail.ru');
     assert.strictEqual(input.phone, '79161234567');
-    // Arlekino — ключ arlekino, контакт из бронирования
+    // Arlekino — по-прежнему ключ arlekino, контакт из бронирования
     const g = stubFerma();
-    await hooks.createPaymentHook({ getFerma: g.getFerma, defer: now, log: () => {}, loadOrder: arlOrder, getSuppliers: () => suppliers })(
+    await H({ getFerma: g.getFerma, defer: now, log: () => {}, loadOrder: arlOrder, getSuppliers: () => suppliers })(
         { orderId: '900000007', amount: 45000, via: 'vtb_callback' });
     assert.strictEqual(g.calls[0].input.scenario, 'payment_arlekino');
     assert.strictEqual(g.calls[0].input.supplier.inn, ARL_SUPPLIER.inn);
@@ -173,14 +204,14 @@ test('live: туроператор из FERMA_SUPPLIERS по operator_id, поч
     setEnv();
 });
 
-test('live: ключ lt — один поставщик для туров без своего; неверный JSON и неверный ИНН — не пробивается', () => {
-    const noOp = { ...LT_ORDER, operator: undefined };
-    let r = hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: noOp, suppliers: JSON.stringify({ lt: OP_SUPPLIER }) });
-    assert.strictEqual(r.input.supplier.inn, OP_SUPPLIER.inn);
-    r = hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: LT_ORDER, suppliers: JSON.stringify({ lt: OP_SUPPLIER, 'lt:33': { ...OP_SUPPLIER, inn: '7707083894' } }) });
-    assert.strictEqual(r.input.supplier.inn, OP_SUPPLIER.inn, 'lt:33 с неверным ИНН пропущен, взят lt');
-    r = hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: LT_ORDER, suppliers: '{oops' });
-    assert.strictEqual(r.skip, 'no_supplier:lt:33 (FERMA_SUPPLIERS — неверный JSON)');
+test('live: общего поставщика для туров нет; Arlekino — неверный JSON / нет ключа — не пробивается', () => {
+    const lt = (ltSupplier) => hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: LT_ORDER,
+        suppliers: JSON.stringify({ lt: OP_SUPPLIER, 'lt:6': OP_SUPPLIER }), ltSupplier });
+    assert.strictEqual(lt(null).skip, 'supplier_missing', 'без реквизитов заказа ключи lt не помогают');
+    assert.strictEqual(lt({ error: 'supplier_invalid', message: 'x' }).skip, 'supplier_invalid');
+    assert.strictEqual(lt({ supplier: ANEX }).input.supplier.inn, ANEX.inn);
+    let r = hooks.paymentReceiptInput({ mode: 'live', source: 'arlekino', orderId: '900000007', amount: 10, booking: ARL_BOOKING, suppliers: '{oops' });
+    assert.strictEqual(r.skip, 'no_supplier:arlekino (FERMA_SUPPLIERS — неверный JSON)');
     r = hooks.paymentReceiptInput({ mode: 'live', source: 'arlekino', orderId: '900000007', amount: 10, booking: ARL_BOOKING, suppliers: JSON.stringify({ lt: OP_SUPPLIER }) });
     assert.strictEqual(r.skip, 'no_supplier:arlekino');
     assert.strictEqual(hooks.ltOperatorId({ package: { operator_id: 78 } }), '78');
@@ -188,18 +219,18 @@ test('live: ключ lt — один поставщик для туров без
 });
 
 test('live: без почты и телефона покупателя — не пробивается (иначе чек ушёл бы на почту организации)', () => {
-    const r = hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: { operator: { id: 33 } }, suppliers: JSON.stringify({ 'lt:33': OP_SUPPLIER }) });
+    const r = hooks.paymentReceiptInput({ mode: 'live', source: 'lt', orderId: 1, amount: 10, orderData: { operator: { id: 33 } }, ltSupplier: { supplier: ANEX } });
     assert.strictEqual(r.skip, 'no_buyer_contact');
 });
 
 test('Ошибки заказа и кассы — промис не отклоняется, только лог; firePaymentReceipt не бросает', async () => {
     const logs = [];
-    let r = await hooks.createPaymentHook({ getFerma: stubFerma().getFerma, defer: now, log: (m) => logs.push(m), loadOrder: async () => { throw new Error('db down'); } })({ orderId: 1, via: 'check_pay' });
+    let r = await H({ getFerma: stubFerma().getFerma, defer: now, log: (m) => logs.push(m), loadOrder: async () => { throw new Error('db down'); } })({ orderId: 1, via: 'check_pay' });
     assert.deepStrictEqual(r, { error: 'db down' });
-    r = await hooks.createPaymentHook({ getFerma: stubFerma({ fail: 'Ferma недоступна' }).getFerma, defer: now, log: (m) => logs.push(m), loadOrder: ltOrder() })({ orderId: 1, amount: 1 });
+    r = await H({ getFerma: stubFerma({ fail: 'Ferma недоступна' }).getFerma, defer: now, log: (m) => logs.push(m), loadOrder: ltOrder() })({ orderId: 1, amount: 1 });
     assert.deepStrictEqual(r, { error: 'Ferma недоступна' });
     assert(/ошибка кассы: Ferma недоступна/.test(logs.join('\n')));
-    r = await hooks.createPaymentHook({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({});
+    r = await H({ getFerma: stubFerma().getFerma, defer: now, log: () => {} })({});
     assert.deepStrictEqual(r, { skipped: 'no_order_id' });
     setEnv({ FERMA_RECEIPT_TRIGGER: 'off' });
     hooks.firePaymentReceipt(undefined);
@@ -211,7 +242,7 @@ test('С настоящим сервисом (test): callback ВТБ и check_pa
     const client = fakeClient();
     const store = createMemoryStore();
     const service = createService({ client, store, sleep: async () => {}, log: () => {} });
-    const hook = hooks.createPaymentHook({ getFerma: () => ({ service }), defer: now, log: () => {}, loadOrder: ltOrder() });
+    const hook = H({ getFerma: () => ({ service }), defer: now, log: () => {}, loadOrder: ltOrder() });
     const r1 = await hook({ orderId: 123456789, amount: 152340, via: 'vtb_callback' });
     const r2 = await hook({ orderId: 123456789, amount: 152340, via: 'check_pay' });
     assert.strictEqual(r1.state, 'confirmed');
@@ -229,24 +260,28 @@ test('С настоящим сервисом (live): боевой чек — п�
     const client = fakeClient();
     const store = createMemoryStore();
     const service = createService({ client, store, sleep: async () => {}, log: () => {} });
-    const hook = hooks.createPaymentHook({ getFerma: () => ({ service }), defer: now, log: () => {}, loadOrder: ltOrder(), getSuppliers: () => JSON.stringify({ 'lt:33': OP_SUPPLIER }) });
+    const hook = H({ getFerma: () => ({ service }), defer: now, log: () => {}, loadOrder: ltOrder(), getSuppliers: () => JSON.stringify({ 'lt:6': OP_SUPPLIER }) });
     const r = await hook({ orderId: 123456789, amount: 152340, via: 'vtb_callback' });
     assert.strictEqual(r.ok, true);
     const body = client.sent[0].Request;
     assert.strictEqual(body.Inn, '9729424935');
     assert.strictEqual(body.InvoiceId, 'tc-123456789-pay-1');
     assert.strictEqual(body.CustomerReceipt.Email, 'ivan.petrov@mail.ru');
-    assert.strictEqual(body.CustomerReceipt.Items[0].PaymentAgentInfo.SupplierInn, OP_SUPPLIER.inn);
+    assert.strictEqual(body.CustomerReceipt.Items[0].PaymentAgentInfo.SupplierInn, ANEX.inn);
+    assert.strictEqual(body.CustomerReceipt.Items[0].PaymentAgentInfo.SupplierName, ANEX.name);
+    assert.strictEqual(body.CustomerReceipt.Items[0].PaymentAgentInfo.SupplierPhone, ANEX.phone);
     assert.strictEqual(body.CustomerReceipt.Items[0].Amount, 152340);
     setEnv();
 });
 
-test('/config: триггер payment, ключи поставщиков без ИНН и телефонов', () => {
-    setEnv({ ...LIVE_ENV, FERMA_SUPPLIERS: JSON.stringify({ 'lt:33': OP_SUPPLIER, arlekino: ARL_SUPPLIER }) });
+test('/config: триггер payment; поставщик тура — из заказа; ключи lt помечены как неиспользуемые; без ИНН и телефонов', () => {
+    setEnv({ ...LIVE_ENV, FERMA_SUPPLIERS: JSON.stringify({ 'lt:33': OP_SUPPLIER, lt: OP_SUPPLIER, arlekino: ARL_SUPPLIER }) });
     const pc = publicConfig(loadConfig());
     assert.strictEqual(pc.receiptTrigger, 'payment');
     assert.strictEqual(pc.receiptOnPayment, true);
-    assert.deepStrictEqual(pc.suppliersConfigured, ['lt:33', 'arlekino']);
+    assert.strictEqual(pc.ltSupplierSource, 'order');
+    assert.deepStrictEqual(pc.suppliersConfigured, ['arlekino']);
+    assert.deepStrictEqual(pc.suppliersIgnored, ['lt:33', 'lt']);
     assert(!JSON.stringify(pc).includes(OP_SUPPLIER.inn) && !JSON.stringify(pc).includes('000-00'), 'значения поставщиков не показываются');
     setEnv({ FERMA_MODE: 'off' });
     assert.strictEqual(publicConfig(loadConfig()).receiptOnPayment, false);

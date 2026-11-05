@@ -797,6 +797,10 @@ app.post('/create-package', requireAuth(['user']), async (req, res) => {
                 );
             }
 
+            // Касса Ferma: реквизиты туроператора ЭТОГО заказа (operator_organization из ответа Level.Travel)
+            // сохраняются сразу — по ним и только по ним пробивается чек после оплаты. Не ждёт и не бросает.
+            require('./lib/ferma/orderSupplier').fireCaptureLtOrderSupplier(order_id, orderData);
+
             // Save Договор оферты / Лицензионный договор from LT create response,
             // rewrite package URLs to local /uploads, and email them.
             try {
