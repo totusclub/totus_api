@@ -261,6 +261,12 @@ async function processVtbCallback(payload) {
         });
       }
 
+      // Касса Ferma: чек уходит в OFD только после подтверждения оплаты банком (RECONCILED),
+      // при FERMA_RECEIPT_TRIGGER=payment. Повтор подтверждения второй чек не создаёт. Не ждёт, не бросает.
+      if (payStatus === 'RECONCILED') {
+        require('../lib/ferma/hooks').firePaymentReceipt({ orderId: dbOrderId, amount, transactionId, via: 'vtb_callback' });
+      }
+
       if (payStatus === 'RECONCILED' && !duplicate && (await isInternalOrder(dbOrderId))) {
         // Наше бронирование без Level.Travel (lib/customRooms/bookings.js): LT не уведомляем,
         // письма/push — свои (onPaid), sendOrderPaidPendingEmail не подходит по тексту.
