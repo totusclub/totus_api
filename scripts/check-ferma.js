@@ -729,7 +729,8 @@ const tourInput = (ref, over = {}) => ({ scenario: 'check', kind: 'income', orde
         assert.ok(/app\.use\('\/api\/ferma', fermaPublicRoutes\)/.test(app));
         assert.ok(/app\.use\('\/api\/admin\/fiscal', fermaAdminRoutes\)/.test(app));
         assert.ok(/require\('\.\/lib\/ferma'\)\.startFermaWorker\(\)/.test(app));
-        assert.ok(!/lib\/ferma/.test(read('utils/vtbCallback.js')), 'к оплатам ВТБ касса пока не подключена');
+        // 05.11.2026: к оплатам ВТБ касса подключена только через firePaymentReceipt и только при RECONCILED (check-ferma-payment.js).
+        assert.ok(/if \(payStatus === 'RECONCILED'\) \{\s*require\('\.\.\/lib\/ferma\/hooks'\)\.firePaymentReceipt\(/.test(read('utils/vtbCallback.js')), 'чек к оплате ВТБ — только после RECONCILED');
         // express в облачной проверке не установлен — роуты считаем по исходнику
         assert.strictEqual((routes.match(/publicRouter\.(get|post|put|patch|delete)\(/g) || []).length, 1, 'публичный — только callback');
         assert.strictEqual((routes.match(/adminRouter\.(get|post|put|patch|delete)\(/g) || []).length, 15);
