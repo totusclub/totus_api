@@ -1710,6 +1710,8 @@ app.use('/api/admin/partner-requests', partnerRequestsAdminRoutes);
 const { publicRouter: fermaPublicRoutes, adminRouter: fermaAdminRoutes } = require('./routes/ferma.routes').buildFermaRoutes();
 app.use('/api/ferma', fermaPublicRoutes);
 app.use('/api/admin/fiscal', fermaAdminRoutes);
+// История чатов пользователей с Машей (ИИ) — просмотр в админке, только staff, только чтение.
+app.use('/api/admin/ai-chats', require('./routes/adminAiChats.routes').buildAdminAiChatsRoutes());
 // Кеш поиска: состояние и ручной прогрев (staff).
 app.use('/api/admin/search-cache', require('./routes/searchCache.routes').buildSearchCacheRoutes(searchCache));
 app.use('/api', homeBannersPublicRoutes);
