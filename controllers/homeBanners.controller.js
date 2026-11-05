@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../db');
 const { getPublicApiBase } = require('../utils/publicApiBase');
+const { bannerToWebp, logLine } = require('../lib/bannerImage');
 
 /**
  * Два баннера под поиском на главной (position 1 и 2), у каждого — свои ссылка и картинки:
@@ -54,6 +55,23 @@ function flag(value) {
     return value === '1' || value === 'true' || value === true;
 }
 
+/**
+ * Загруженные картинки → WebP со сжатием (lib/bannerImage.js). Объекты файлов в req.files / req.file
+ * заменяются на итоговые, чтобы дальше (БД, cleanupUploads, lib/imageOptimize.js) шёл уже WebP.
+ */
+async function convertUploads(req, position) {
+    for (const [field, theme] of [['image', 'light'], ['image_dark', 'dark']]) {
+        const file = uploaded(req, field);
+        if (!file) continue;
+        const result = await bannerToWebp(file);
+        const line = logLine(position, theme, result);
+        if (line) console.log(line);
+        if (result.file === file) continue;
+        if (req.files && Array.isArray(req.files[field]) && req.files[field][0] === file) req.files[field][0] = result.file;
+        if (req.file === file) req.file = result.file;
+    }
+}
+
 function cleanupUploads(req) {
     for (const field of ['image', 'image_dark']) {
         const file = uploaded(req, field);
@@ -78,6 +96,7 @@ exports.update = async (req, res) => {
     }
 
     const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+    await convertUploads(req, position);
     const lightFile = uploaded(req, 'image');
     const darkFile = uploaded(req, 'image_dark');
     const newImage = lightFile ? `/uploads/banners/${lightFile.filename}` : null;

@@ -15,6 +15,9 @@ const root = path.resolve(__dirname, '..');
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'home-banners-'));
 fs.mkdirSync(path.join(tmpRoot, 'controllers'));
 fs.copyFileSync(path.join(root, 'controllers', 'homeBanners.controller.js'), path.join(tmpRoot, 'controllers', 'homeBanners.controller.js'));
+// Конвертация в WebP (lib/bannerImage.js) — настоящая; «загрузки» в тесте не картинки, поэтому остаются как есть.
+fs.mkdirSync(path.join(tmpRoot, 'lib'));
+for (const name of ['bannerImage.js', 'imageOptimize.js']) fs.copyFileSync(path.join(root, 'lib', name), path.join(tmpRoot, 'lib', name));
 let passed = 0;
 let failed = 0;
 
