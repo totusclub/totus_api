@@ -1475,6 +1475,12 @@ app.post('/check_pay', async (req, res) => {
                 console.error("DB update failed:", dbErr);
             }
 
+            // Касса Ferma: чек уходит в OFD только после подтверждения оплаты банком (paid),
+            // при FERMA_RECEIPT_TRIGGER=payment. Повтор проверки второй чек не создаёт. Не ждёт, не бросает.
+            if (paid) {
+                require('./lib/ferma/hooks').firePaymentReceipt({ orderId: resolved_order_id, amount, transactionId: transaction_id, via: 'check_pay' });
+            }
+
             if (paid && !alreadyNotified) {
                 try {
                     const [rows] = await db.query(
