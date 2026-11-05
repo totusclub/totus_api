@@ -1,6 +1,8 @@
 /**
  * Create `home_banners` table for the two hero-bottom banners on the home page.
  * Seeds two fixed slots (position 1 and 2).
+ * Adds `image_dark` (картинка баннера для тёмной темы сайта), если колонки ещё нет.
+ * Повторный запуск безопасен: существующие данные не меняются.
  * Run from kedam_API folder:  node scripts/migrate-home-banners.js
  */
 require('dotenv').config();
@@ -16,6 +18,16 @@ async function tableExists(table) {
     return rows.length > 0;
 }
 
+async function columnExists(table, column) {
+    const [rows] = await db.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+         LIMIT 1`,
+        [table, column],
+    );
+    return rows.length > 0;
+}
+
 async function migrate() {
     const table = 'home_banners';
 
@@ -25,6 +37,7 @@ async function migrate() {
               id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
               position TINYINT NOT NULL,
               image VARCHAR(500) NOT NULL DEFAULT '',
+              image_dark VARCHAR(500) NOT NULL DEFAULT '',
               url VARCHAR(1000) NOT NULL DEFAULT '',
               updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               UNIQUE KEY uq_home_banners_position (position)
@@ -33,6 +46,13 @@ async function migrate() {
         console.log('Created table `home_banners`.');
     } else {
         console.log('Table `home_banners` already exists — skip create.');
+    }
+
+    if (!(await columnExists(table, 'image_dark'))) {
+        await db.query("ALTER TABLE home_banners ADD COLUMN image_dark VARCHAR(500) NOT NULL DEFAULT '' AFTER image");
+        console.log('Added column `image_dark` (картинка для тёмной темы).');
+    } else {
+        console.log('Column `image_dark` already exists — skip.');
     }
 
     for (const position of [1, 2]) {
