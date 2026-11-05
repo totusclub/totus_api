@@ -733,9 +733,12 @@ const tourInput = (ref, over = {}) => ({ scenario: 'check', kind: 'income', orde
         assert.ok(/if \(payStatus === 'RECONCILED'\) \{\s*require\('\.\.\/lib\/ferma\/hooks'\)\.firePaymentReceipt\(/.test(read('utils/vtbCallback.js')), 'чек к оплате ВТБ — только после RECONCILED');
         // express в облачной проверке не установлен — роуты считаем по исходнику
         assert.strictEqual((routes.match(/publicRouter\.(get|post|put|patch|delete)\(/g) || []).length, 1, 'публичный — только callback');
-        assert.strictEqual((routes.match(/adminRouter\.(get|post|put|patch|delete)\(/g) || []).length, 15);
+        // 15 эндпоинтов кассы + 3 только для чтения: поставщики заказов и оплаты без чека (check-ferma-order-supplier.js)
+        assert.strictEqual((routes.match(/adminRouter\.(get|post|put|patch|delete)\(/g) || []).length, 18);
         const ctrl = createFermaController(() => ({}));
         for (const h of (routes.match(/c\.(\w+)\)/g) || []).map((m) => m.slice(2, -1))) assert.strictEqual(typeof ctrl[h], 'function', `обработчик ${h}`);
+        const osCtrl = require(path.join(root, 'controllers/ferma.controller')).createOrderSupplierController({});
+        for (const h of (routes.match(/os\.(\w+)\)/g) || []).map((m) => m.slice(3, -1))) assert.strictEqual(typeof osCtrl[h], 'function', `обработчик ${h}`);
         const env = read('.env.example');
         for (const k of ['FERMA_MODE', 'FERMA_LOGIN', 'FERMA_PASSWORD', 'FERMA_INN', 'FERMA_CALLBACK_SECRET']) assert.ok(env.includes(`${k}=`), k);
         assert.ok(!/FERMA_PASSWORD=\S/.test(env), 'в .env.example нет пароля');
