@@ -11,7 +11,9 @@ router.post('/refresh', authLimiter, authController.refreshToken);
 
 // Только staff (AUTH_MODE=log → пропуск с логом, enforce → 401/403)
 const staffOnly = requireAuth(['staff']);
-router.post('/init', authController.userInit);
+// `/init` проверяет Bearer сам, но без guard любой валидный токен (в т.ч. user) доходил до
+// выборки по staff.id. Ставим ту же проверку роли, что и на остальных admin-маршрутах (M8 аудита).
+router.post('/init', staffOnly, authController.userInit);
 router.get('/users', staffOnly, authController.users);
 router.get('/orders', staffOnly, authController.orders);
 router.get('/orders/:id', staffOnly, authController.ordersById);
