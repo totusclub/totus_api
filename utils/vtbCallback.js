@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const { logCallback, logCallbackError } = require('./callbackLogger');
 const { requireEnv } = require('../lib/env');
 const { canonicalPayStatus } = require('../lib/customRooms/vtbCheck');
+// notifyHub раньше не импортировался — push «Оплата не прошла» падал с ReferenceError (попутная починка).
+const notifyHub = require('../lib/notifyHub');
 
 const LOG = 'VTB_CALLBACK';
 
@@ -25,6 +27,34 @@ async function isInternalOrder(orderId) {
     return await require('../lib/customRooms/bookings').isInternalOrder(orderId);
   } catch (err) {
     return false;
+  }
+}
+
+const paymentPolicy = require('../lib/paymentPolicy');
+
+// Встречная проверка платежа в банке (VTB_CALLBACK_VERIFY=1): статус и сумма.
+async function verifyWithBank(dbOrderId, dbOrder, object, callbackAmount) {
+  let expectedAmount = null;
+  try {
+    const [rows] = await db.query('SELECT package FROM orders WHERE order_id = ? LIMIT 1', [dbOrderId]);
+    expectedAmount = rows[0] ? paymentPolicy.resolveServerAmount(rows[0]) : null;
+  } catch (e) {
+    /* сумма из БД недоступна — проверяем только статус */
+  }
+  if (!paymentPolicy.amountsAgree(expectedAmount, callbackAmount)) {
+    return { ok: false, reason: 'amount_mismatch', expectedAmount };
+  }
+  const qrcId = object.sbpParams?.qrcId || object.orderCode || dbOrder?.transaction_code || null;
+  try {
+    const { checkSbpPayment } = require('../lib/customRooms/vtbCheck');
+    const info = await checkSbpPayment(qrcId, dbOrderId);
+    if (!info.paid) return { ok: false, reason: 'bank_not_paid', bankStatus: info.payStatus, expectedAmount };
+    if (!paymentPolicy.amountsAgree(expectedAmount, info.amount)) {
+      return { ok: false, reason: 'bank_amount_mismatch', bankStatus: info.payStatus, expectedAmount };
+    }
+    return { ok: true, bankStatus: info.payStatus, expectedAmount };
+  } catch (e) {
+    return { ok: false, reason: `bank_check_failed:${e.reason || e.message}`, expectedAmount };
   }
 }
 
@@ -221,6 +251,32 @@ async function processVtbCallback(payload) {
   const sbp = object.sbpParams || {};
   const dbOrder = await findOrderInDb(object);
   const dbOrderId = dbOrder?.order_id ?? null;
+  const callbackAmount = parseAmount(object.amount?.value ?? sbp.amount);
+
+  // C2 аудита: callback банка не подписан. При VTB_CALLBACK_VERIFY=1 статус «оплачено» принимается только
+  // после встречной проверки в банке (и совпадения суммы с ожидаемой по заказу). Иначе заказ оплаченным
+  // не считается — callback игнорируется без изменений в заказе, всё пишется в лог.
+  if (dbOrderId && payStatus === 'RECONCILED' && paymentPolicy.callbackVerifyEnabled()) {
+    const verified = await verifyWithBank(dbOrderId, dbOrder, object, callbackAmount);
+    if (!verified.ok) {
+      logCallbackError(LOG, 'VERIFY', 'Callback RECONCILED not confirmed by bank — ignored', {
+        order_id: dbOrderId,
+        reason: verified.reason,
+        bank_status: verified.bankStatus || null,
+        callback_amount: callbackAmount,
+        expected_amount: verified.expectedAmount ?? null,
+      });
+      // Ничего в заказе не меняем: ни статус, ни чек, ни письма. Банк пришлёт корректный callback сам.
+      const result = {
+        success: true, type, order_id: dbOrderId, pay_status: dbOrder.pay_status || null,
+        verified: false, reason: verified.reason, duplicate: false, order_found: true, lt_notify: null,
+      };
+      logCallback(LOG, 'OUT', 'Bank callback ignored (not verified)', result);
+      return result;
+    } else {
+      logCallback(LOG, 'VERIFY', 'Callback confirmed by bank', { order_id: dbOrderId, amount: callbackAmount });
+    }
+  }
 
   logCallback(LOG, 'DB', dbOrderId ? 'Order found in DB' : 'Order NOT found in DB', {
     db_order_id: dbOrderId,
@@ -231,7 +287,7 @@ async function processVtbCallback(payload) {
   const transactionId =
     object.paymentId || sbp.transactionId || object.orderId || '';
   const transactionCode = sbp.qrcId || object.paymentCode || object.orderCode;
-  const amount = parseAmount(object.amount?.value ?? sbp.amount);
+  const amount = callbackAmount;
 
   if (type === 'PAYMENT' || type === 'ORDER') {
     let duplicate = false;
