@@ -2,14 +2,12 @@ const axios = require('axios');
 
 const VALIDATE_URL = 'https://smartcaptcha.cloud.yandex.ru/validate';
 
+// M3 аудита: IP берём из req.ip — его уже вычислил Express по trust proxy (один хоп nginx),
+// а не из первого X-Forwarded-For, который клиент может подставить сам.
 function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) {
-    return forwarded.split(',')[0].trim();
-  }
   return (
-    req.headers['x-real-ip'] ||
     req.ip ||
+    req.headers['x-real-ip'] ||
     req.connection?.remoteAddress ||
     ''
   );
@@ -23,10 +21,14 @@ async function verifyYandexSmartCaptcha(req, token) {
   const secret = String(process.env.YANDEX_SMARTCAPTCHA_SERVER_KEY || '').trim();
 
   if (!secret) {
-    console.warn(
-      '[SMARTCAPTCHA] YANDEX_SMARTCAPTCHA_SERVER_KEY is not set — skipping validation'
-    );
-    return { ok: true, skipped: true };
+    // M3 аудита: без серверного ключа капча раньше молча пропускала всех (fail-open).
+    // Теперь — отказ, если явно не разрешено CAPTCHA_FAIL_OPEN=1 (локальная разработка).
+    if (process.env.CAPTCHA_FAIL_OPEN === '1') {
+      console.warn('[SMARTCAPTCHA] YANDEX_SMARTCAPTCHA_SERVER_KEY is not set — skipping validation (CAPTCHA_FAIL_OPEN=1)');
+      return { ok: true, skipped: true };
+    }
+    console.error('[SMARTCAPTCHA] YANDEX_SMARTCAPTCHA_SERVER_KEY is not set — validation refused (set the key or CAPTCHA_FAIL_OPEN=1)');
+    return { ok: false, message: 'Captcha is not configured' };
   }
 
   const captchaToken = String(token || '').trim();
