@@ -954,11 +954,17 @@ app.post('/validate-tourists', async (req, res) => {
 });
 
 
+// Просмотр заказов: клиент (user/agent) — только свои, это проверяют resolveOwnerId / assertOrderOwner
+// внутри обработчиков; сотрудник (staff, админка) — любые. Без 'staff' здесь админка в AUTH_MODE=enforce
+// получала 403 forbidden на списке и карточке заказа, хотя проверки владельца staff уже пропускают.
+// Только чтение: создание платежей и действия с заказом остаются requireAuth(['user']) / ['staff'].
+const ORDER_VIEW_ROLES = ['user', 'staff'];
+
 // Level Travel client orders (proxy to api.level.travel)
 // Requires:
 //   - Partner key is applied server-side via Authorization header
 //   - Client auth_token from order create (orders.lt_auth_token)
-app.get('/client/orders', requireAuth(['user']), async (req, res) => {
+app.get('/client/orders', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
         const auth_token = String(src.auth_token || '').trim();
@@ -1008,7 +1014,7 @@ app.get('/client/orders', requireAuth(['user']), async (req, res) => {
     }
 });
 
-app.get('/client/orders/:order_id', requireAuth(['user']), async (req, res) => {
+app.get('/client/orders/:order_id', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
     try {
         const src = { ...req.query, ...req.body };
         const orderId = Number(req.params.order_id);
@@ -1128,7 +1134,7 @@ app.post('/client/orders/:order_id/sync', requireAuth(['user']), async (req, res
     }
 });
 
-app.get('/orders', requireAuth(['user']), async (req, res) => {
+app.get('/orders', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
     try {
         const orderId = String(req.query.order_id || '').replace(/^ORDER/i, '').trim();
         if (!orderId) {
@@ -1292,7 +1298,7 @@ app.get('/orders/:order_id/payment', requireAuth(['user']), async (req, res) => 
     }
 });
 
-app.get('/orders/documents', requireAuth(['user']), async (req, res) => {
+app.get('/orders/documents', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
     try {
         const orderId = Number(req.query.order_id);
         if (!Number.isFinite(orderId)) {
@@ -1311,7 +1317,7 @@ app.get('/orders/documents', requireAuth(['user']), async (req, res) => {
         res.status(500).json({ error: 'Failed to get order documents' });
     }
 });
-app.get('/user/orders', requireAuth(['user']), async (req, res) => {
+app.get('/user/orders', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
     try {
         const userId = resolveOwnerId(req, res, req.query.user_id);
         if (userId === null) {
