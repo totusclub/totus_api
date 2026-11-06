@@ -25,6 +25,9 @@ const path = require('path');
 const {json, response} = require("express");
 
 const { requireAuth, optionalAuth, resolveOwnerId, assertOrderOwner, authMode } = require('./lib/auth');
+// Платёжная политика (SECURITY_AUDIT_2026-11_RU.md, C2/C3): сумма с сервера, payUrl только платёжных систем,
+// защита callback банка.
+const paymentPolicy = require('./lib/paymentPolicy');
 const { corsMiddleware, helmetMiddleware, allowedOrigins } = require('./lib/security');
 
 const app = express();
@@ -631,7 +634,7 @@ app.post('/packages/flights', async (req, res) => {
 });
 
 
-app.post('/vtb/create-order', async (req, res) => {
+app.post('/vtb/create-order', requireAuth(['user']), async (req, res) => {
     try {
         const {
             orderId,
@@ -647,11 +650,25 @@ app.post('/vtb/create-order', async (req, res) => {
             return res.status(400).json({ error: "Missing required fields" });
         }
 
+        // C3 аудита: сумма платежа — из заказа в БД, значение клиента только как запасное (PAYMENT_AMOUNT_SOURCE).
+        const cleanOrderId = String(orderId).replace(/^ORDER/i, '');
+        const [orderRows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [cleanOrderId]);
+        const orderRow = orderRows[0] || null;
+        if (orderRow && !assertOrderOwner(req, res, orderRow.user_id)) return;
+        const chosen = paymentPolicy.chooseAmount({
+            serverAmount: paymentPolicy.resolveServerAmount(orderRow),
+            clientAmount: amount,
+            orderId: cleanOrderId,
+        });
+        if (chosen.amount == null) {
+            return res.status(400).json({ error: 'Payment amount is not known for this order' });
+        }
+
         const { createVtbPaymentForOrder } = require("./utils/vtbCreatePayment");
         const result = await createVtbPaymentForOrder({
             orderId,
             orderName,
-            amount,
+            amount: { value: chosen.amount, code: amount.code || 'RUB' },
             returnUrl,
             paymentPurpose: paymentPurpose || purposeText,
             paymentMinutes: 30,
@@ -842,21 +859,30 @@ app.post('/create-package', requireAuth(['user']), async (req, res) => {
                 );
             }
 
-            const paymentAmount =
-                payload?.amount ||
-                payload?.payment?.amount ||
-                resolveLtOrderPayAmount(orderData) ||
-                orderData?.full_price ||
-                orderData?.price ||
-                orderData?.total_price ||
-                orderData?.amount ||
-                null;
+            // C3 аудита: сумма — из ответа Level.Travel (цена заказа), значение клиента только как запасное.
+            const paymentAmount = paymentPolicy.chooseAmount({
+                serverAmount:
+                    resolveLtOrderPayAmount(orderData) ||
+                    orderData?.full_price ||
+                    orderData?.price ||
+                    orderData?.total_price ||
+                    orderData?.amount ||
+                    null,
+                clientAmount: payload?.amount || payload?.payment?.amount || null,
+                orderId: order_id,
+            }).amount;
 
             // Касса Ferma: временно (FERMA_RECEIPT_TRIGGER=booking, только FERMA_MODE=test) — чек на стенд
             // при создании заказа, чтобы посмотреть, что отправляется. Не ждёт и не бросает. docs/FERMA_API.md §7.
             require('./lib/ferma/hooks').fireBookingReceipt({ source: 'lt', orderId: order_id, amount: paymentAmount, orderData });
 
-            if (payload?.payUrl) {
+            // C3 аудита: готовую ссылку оплаты от клиента принимаем только на хосты платёжных систем;
+            // иначе ссылку создаёт сервер (ветка ниже, как и при отсутствии payUrl).
+            const clientPayUrl = paymentPolicy.clientPayUrlAllowed(payload?.payUrl) ? payload.payUrl : null;
+            if (payload?.payUrl && !clientPayUrl) {
+                console.warn(`[PAYMENT] client payUrl rejected order=${order_id} host=${String(payload.payUrl).slice(0, 80)}`);
+            }
+            if (clientPayUrl) {
                 try {
                     const { savePaymentToPackage } = require('./utils/orderPayment');
                     const { normalizeAmount } = require('./utils/vtbCreatePayment');
@@ -1011,9 +1037,10 @@ app.get('/client/orders/:order_id', requireAuth(['user']), async (req, res) => {
 
         const [rows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
         const orderRow = rows[0] || null;
+        // H4 аудита: чужой заказ не отдаём (владелец — из токена; staff видит любой).
+        if (orderRow && !assertOrderOwner(req, res, orderRow.user_id)) return;
 
         const auth_token = resolveAuthToken(orderRow, src.auth_token);
-        console.log('auth_token',auth_token)
         if (!auth_token) {
             return res.status(400).json({
                 success: false,
@@ -1069,12 +1096,18 @@ app.get('/client/orders/:order_id', requireAuth(['user']), async (req, res) => {
 app.post('/client/orders/:order_id/sync', requireAuth(['user']), async (req, res) => {
     try {
         const orderId = Number(req.params.order_id);
-        const auth_token =
-            req.body?.auth_token || req.query?.auth_token || process.env.LT_CLIENT_AUTH_TOKEN;
-
         if (!Number.isFinite(orderId)) {
             return res.status(400).json({ error: 'Invalid order_id' });
         }
+        // H4 аудита: владелец заказа — из токена; общий LT-токен из .env (LT_CLIENT_AUTH_TOKEN) доступен
+        // только сотрудникам, иначе любой заказ синхронизировался бы чужим токеном.
+        const [ownerRows] = await db.query('SELECT user_id, lt_auth_token FROM orders WHERE order_id = ? LIMIT 1', [orderId]);
+        if (ownerRows[0] && !assertOrderOwner(req, res, ownerRows[0].user_id)) return;
+        const isStaff = Boolean(req.auth && req.auth.role === 'staff');
+        const auth_token =
+            req.body?.auth_token || req.query?.auth_token || (ownerRows[0] && ownerRows[0].lt_auth_token) ||
+            (isStaff ? process.env.LT_CLIENT_AUTH_TOKEN : null);
+
         if (!auth_token) {
             return res.status(400).json({ error: 'Missing auth_token' });
         }
@@ -1236,8 +1269,9 @@ app.get('/orders/:order_id/payment', requireAuth(['user']), async (req, res) => 
                     pkg = {};
                 }
 
+                // C3 аудита: сумму из query принимаем только от сотрудника; для пользователя — только из заказа.
                 const amount =
-                    normalizeAmount(req.query.amount) ||
+                    (req.auth && req.auth.role === 'staff' ? normalizeAmount(req.query.amount) : null) ||
                     normalizeAmount(pkg._pay_amount) ||
                     normalizeAmount(require('./utils/orderPayment').resolveLtOrderPayAmount(pkg)) ||
                     normalizeAmount(pkg.full_price) ||
@@ -1534,7 +1568,8 @@ app.post('/check_pay', async (req, res) => {
 
 
 
-app.post('/payment/status', async (req, res) => {
+// C2 аудита: ручное уведомление Level.Travel — только сотрудники (исторический служебный маршрут).
+app.post('/payment/status', requireAuth(['staff']), async (req, res) => {
     try {
         const payload = req.body;
 
@@ -1606,7 +1641,9 @@ const { processVtbCallback } = require('./utils/vtbCallback');
 const { logCallback, logCallbackError } = require('./utils/callbackLogger');
 
 // VTB SBP: final payment/refund status callback from bank
-app.post('/vtb/callback', async (req, res) => {
+// C2 аудита: источник callback проверяется (VTB_CALLBACK_ALLOWED_IPS / VTB_CALLBACK_SECRET),
+// статус «оплачено» — встречной проверкой в банке при VTB_CALLBACK_VERIFY=1 (utils/vtbCallback.js).
+app.post('/vtb/callback', paymentPolicy.vtbCallbackGuard(), async (req, res) => {
     try {
         const result = await processVtbCallback(req.body);
         return res.status(200).json(result);
@@ -1621,12 +1658,21 @@ app.post('/vtb/callback', async (req, res) => {
 });
 
 // Partner → Level Travel: notify order paid
-app.post('/level_travel/notify-paid', async (req, res) => {
+// C2 аудита: уведомить Level.Travel об оплате может только владелец заказа или сотрудник; сумма — из заказа.
+app.post('/level_travel/notify-paid', requireAuth(['user']), async (req, res) => {
     try {
-        const { order_id, amount } = req.body;
+        const { order_id } = req.body;
         if (!order_id) {
             return res.status(400).json({ success: false, error: "Missing order_id" });
         }
+        const cleanId = String(order_id).replace(/^ORDER/i, '');
+        const [ownerRows] = await db.query('SELECT * FROM orders WHERE order_id = ? LIMIT 1', [cleanId]);
+        if (ownerRows[0] && !assertOrderOwner(req, res, ownerRows[0].user_id)) return;
+        const amount = paymentPolicy.chooseAmount({
+            serverAmount: paymentPolicy.resolveServerAmount(ownerRows[0] || null),
+            clientAmount: req.body.amount,
+            orderId: cleanId,
+        }).amount;
 
         const { notifyLevelTravelOrderPaid } = require('./utils/levelTravelPayment');
         const result = await notifyLevelTravelOrderPaid({ order_id, amount });
