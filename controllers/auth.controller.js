@@ -1,4 +1,5 @@
 const db = require('../db');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const {post} = require("axios");
@@ -9,8 +10,18 @@ const { verifyYandexSmartCaptcha } = require('../utils/yandexSmartCaptcha');
 const auth = require('../lib/auth');
 
 // Apple App Review demo account — fixed email + code, only this address.
+// APPLE_DEMO_ENABLED=0 выключает демо-вход после прохождения ревью (M1 аудита). По умолчанию включён.
 const APPLE_DEMO_EMAIL = 'test@totus.com';
 const APPLE_DEMO_CODE = '1111';
+const APPLE_DEMO_ENABLED = process.env.APPLE_DEMO_ENABLED !== '0';
+
+// Код входа (C5 аудита): длина настраивается (по умолчанию 4 — как было, без слома полей ввода),
+// генерация криптостойкая. TTL и лимит попыток применяются, только если в таблице users есть
+// колонки code_expires_at / code_attempts (scripts/migrate-login-code-security.js); без них —
+// поведение как раньше. Значения берутся из окружения.
+const LOGIN_CODE_LENGTH = Math.min(8, Math.max(4, Number(process.env.LOGIN_CODE_LENGTH) || 4));
+const LOGIN_CODE_TTL_SECONDS = Math.max(60, Number(process.env.LOGIN_CODE_TTL_SECONDS) || 600);
+const LOGIN_CODE_MAX_ATTEMPTS = Math.max(3, Number(process.env.LOGIN_CODE_MAX_ATTEMPTS) || 5);
 
 // Новый пользователь сразу получает Calling (чат и звонок в поддержку) и AI (Мила):
 // users.access = 0 — «Доступ» в Calling Admin; 1 — «Заблок.»; NULL calling_api_v2
@@ -19,14 +30,52 @@ const APPLE_DEMO_CODE = '1111';
 // Приложение и сайт читают флаг из calling_api_v2 — их менять не нужно (решение владельца 03.11.2026).
 const NEW_USER_ACCESS = 0;
 
-const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString();
+// Криптостойкий код фиксированной длины (без ведущего нуля — как в прежней логике 1000–9999).
+const generateCode = () => {
+    const min = 10 ** (LOGIN_CODE_LENGTH - 1);
+    const max = 10 ** LOGIN_CODE_LENGTH;
+    return String(crypto.randomInt(min, max));
+};
 
 function normalizeEmail(email = '') {
     return String(email).trim().toLowerCase();
 }
 
 function isAppleDemoEmail(email) {
-    return normalizeEmail(email) === APPLE_DEMO_EMAIL;
+    return APPLE_DEMO_ENABLED && normalizeEmail(email) === APPLE_DEMO_EMAIL;
+}
+
+// Есть ли в users колонки для срока жизни кода и счётчика попыток (читается один раз на процесс).
+let codeColumnsCache = null;
+async function getCodeColumns() {
+    if (codeColumnsCache) return codeColumnsCache;
+    const cols = { code_expires_at: false, code_attempts: false };
+    try {
+        const [rows] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+               AND COLUMN_NAME IN ('code_expires_at', 'code_attempts')`,
+        );
+        for (const c of rows) cols[c.COLUMN_NAME] = true;
+        codeColumnsCache = cols;
+    } catch (e) {
+        console.warn('[AUTH] cannot read users code columns:', e.message);
+        return { code_expires_at: false, code_attempts: false };
+    }
+    return codeColumnsCache;
+}
+
+// Проставить срок жизни кода и обнулить счётчик попыток после выдачи нового кода (если колонки есть).
+async function setCodeMeta(email) {
+    const cols = await getCodeColumns();
+    const sets = [];
+    const params = [];
+    if (cols.code_expires_at) { sets.push('code_expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND)'); params.push(LOGIN_CODE_TTL_SECONDS); }
+    if (cols.code_attempts) sets.push('code_attempts = 0');
+    if (!sets.length) return;
+    params.push(email);
+    await db.query(`UPDATE users SET ${sets.join(', ')} WHERE email = ?`, params)
+        .catch((e) => console.warn('[AUTH] setCodeMeta failed:', e.message));
 }
 
 function resolveVerificationCode(email) {
@@ -47,9 +96,7 @@ async function sendVerificationEmail(email, code, { name } = {}) {
 }
 
 function generateUserCode() {
-    return Array.from({ length: 4 }, () =>
-        Math.floor(1000 + Math.random() * 9000)
-    ).join(' ');
+    return Array.from({ length: 4 }, () => String(crypto.randomInt(1000, 10000))).join(' ');
 }
 
 function getSmartCaptchaToken(body = {}) {
@@ -139,6 +186,7 @@ exports.signup = async (req, res) => {
             [name, lName, email, phone, code, codeLoyalty, NEW_USER_ACCESS]
         );
         createdUserId = ins?.insertId ?? null;
+        await setCodeMeta(email);
 
         try {
             await sendVerificationEmail(email, code, { name });
@@ -158,7 +206,7 @@ exports.signup = async (req, res) => {
         res.status(201).json({ message: 'Пользователь создан. Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
         console.error('[SIGNUP] failed:', err.code || '', err.message);
-        res.status(500).json({ message: 'Signup failed', error: err.message });
+        res.status(500).json({ message: 'Signup failed' });
     }
 };
 
@@ -184,20 +232,41 @@ exports.verifyCode = async (req, res) => {
             }
         } else {
             if (!code) return res.status(400).json({ message: 'Invalid code' });
-            const [matched] = await db.query(
-                'SELECT * FROM users WHERE email = ? AND code = ?',
-                [email, code]
-            );
-            users = matched;
+            const cols = await getCodeColumns();
+            const [rows] = await db.query('SELECT * FROM users WHERE email = ? LIMIT 1', [email]);
+            const candidate = rows[0];
+            if (!candidate) return res.status(400).json({ message: 'Invalid code' });
+
+            // Лимит попыток: защита от перебора (если колонка есть).
+            if (cols.code_attempts && Number(candidate.code_attempts || 0) >= LOGIN_CODE_MAX_ATTEMPTS) {
+                return res.status(429).json({ message: 'Слишком много попыток. Запросите новый код.', error: 'too_many_attempts' });
+            }
+            // Срок жизни кода (если колонка есть).
+            const expired = cols.code_expires_at && candidate.code_expires_at
+                && new Date(candidate.code_expires_at).getTime() < Date.now();
+            const codeOk = candidate.code != null && String(candidate.code) === code && !expired;
+            if (!codeOk) {
+                if (cols.code_attempts) {
+                    await db.query('UPDATE users SET code_attempts = COALESCE(code_attempts, 0) + 1 WHERE email = ?', [email]).catch(() => {});
+                }
+                return res.status(400).json({ message: 'Invalid code' });
+            }
+            users = [candidate];
         }
 
         if (users.length === 0) return res.status(400).json({ message: 'Invalid code' });
 
-        await db.query('UPDATE users SET code = NULL WHERE email = ?', [email]);
+        // Код одноразовый: гасим его и сбрасываем счётчик попыток (колонка — если есть).
+        const cols2 = await getCodeColumns();
+        await db.query(
+            `UPDATE users SET code = NULL${cols2.code_attempts ? ', code_attempts = 0' : ''} WHERE email = ?`,
+            [email],
+        );
 
         res.status(200).json(issueUserTokens(users[0]));
     } catch (err) {
-        res.status(500).json({ message: 'Verification failed', error: err.message,auth:false });
+        console.error('[AUTH] Verification failed:', err.message);
+        res.status(500).json({ message: 'Verification failed',auth:false });
     }
 };
 
@@ -224,10 +293,12 @@ exports.signin = async (req, res) => {
         if (!user) return res.status(201).json({ message: 'User not found',screen:'SIGNUP' });
 
         await db.query('UPDATE users SET code = ? WHERE email = ?', [code, email]);
+        await setCodeMeta(email);
         await sendVerificationEmail(email, code, { name: user.name });
         res.status(201).json({ message: 'Код подтверждения отправлен на email.',screen:'VERIFICATION' });
     } catch (err) {
-        res.status(500).json({ message: 'Signin failed', error: err.message });
+        console.error('[AUTH] Signin failed:', err.message);
+        res.status(500).json({ message: 'Signin failed' });
     }
 };
 
@@ -239,7 +310,8 @@ exports.me = async (req, res) => {
         if (!user) return res.status(404).json({ message: 'User not found' });
         res.json({ user: { ...auth.publicUser(user), role: auth.roleOf(req.auth.payload) } });
     } catch (err) {
-        res.status(500).json({ message: 'Failed to load profile', error: err.message });
+        console.error('[AUTH] Failed to load profile:', err.message);
+        res.status(500).json({ message: 'Failed to load profile' });
     }
 };
 
@@ -269,7 +341,8 @@ exports.refresh = async (req, res) => {
         }
         res.json(issueUserTokens(user));
     } catch (err) {
-        res.status(500).json({ message: 'Refresh failed', error: err.message });
+        console.error('[AUTH] Refresh failed:', err.message);
+        res.status(500).json({ message: 'Refresh failed' });
     }
 };
 
@@ -315,7 +388,8 @@ exports.agentSignIn = async (req, res) => {
             user: { ...auth.publicUser(user), role: 'agent' },
         });
     } catch (err) {
-        res.status(500).json({ message: 'Sign-in failed', error: err.message });
+        console.error('[AUTH] Sign-in failed:', err.message);
+        res.status(500).json({ message: 'Sign-in failed' });
     }
 };
 
@@ -324,7 +398,8 @@ exports.generationLoyalty = async (req, res) => {
         const code = generateUniqueLoyaltyId();
         res.status(200).json({ message: 'Verification code sent to email.',code:code });
     } catch (err) {
-        res.status(500).json({ message: 'Signin failed', error: err.message });
+        console.error('[AUTH] Signin failed:', err.message);
+        res.status(500).json({ message: 'Signin failed' });
     }
 };
 
@@ -333,8 +408,8 @@ const TELEGRAM_GATEWAY_TOKEN = process.env.TELEGRAM_GATEWAY_TOKEN || null;
 exports.verificationCode = async (req, res) => {
     if (!TELEGRAM_GATEWAY_TOKEN) return res.status(503).json({ message: 'Phone verification is not configured' });
     const { phone } = req.body;
-    // const code = generateCode();
-    const code = 1111;
+    // M2 аудита: раньше код был зашит (1111). Теперь — криптостойкий, как для email.
+    const code = generateCode();
     try {
         const checkResult = await gatewayPost('checkSendAbility', {
             phone_number: phone,
@@ -347,7 +422,7 @@ exports.verificationCode = async (req, res) => {
         const sendResult = await gatewayPost('sendVerificationMessage', {
             phone_number: phone,
             request_id: checkResult?.result.request_id,
-            code_length: 4,
+            code_length: LOGIN_CODE_LENGTH,
             code:code,
             ttl: 60, // 60 seconds
             payload: 'verify_user_001',
@@ -357,16 +432,18 @@ exports.verificationCode = async (req, res) => {
         res.status(200).json(sendResult);
 
     } catch (err) {
-        res.status(500).json({ message: 'Signin failed', error: err.message });
+        console.error('[AUTH] Signin failed:', err.message);
+        res.status(500).json({ message: 'Signin failed' });
     }
 };
 
 exports.telegramVerificationCallback = async (req, res) => {
     try {
-        console.log('req',req?.body)
-        console.log('req.params',req.params)
+        // M6 аудита: тело callback (телефон, код) в лог не пишем; раньше ответ не отправлялся вовсе.
+        res.status(200).json({ ok: true });
     } catch (err) {
-        res.status(500).json({ message: 'Signin failed', error: err.message });
+        console.error('[AUTH] Signin failed:', err.message);
+        res.status(500).json({ message: 'Signin failed' });
     }
 };
 

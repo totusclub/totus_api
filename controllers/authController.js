@@ -3,6 +3,17 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const { prepareOrderRowForClient } = require('../utils/orderDocuments');
 
+// Наружу из строки users никогда не уходят секретные поля (H1 аудита): одноразовый код входа,
+// хэш пароля, refresh-токен, служебные поля voip. Остальные колонки сохраняем как были, чтобы
+// не ломать админку. Применяется к спискам пользователей.
+const USER_SECRET_FIELDS = ['code', 'password', 'refresh_token', 'voipToken', 'socketId'];
+function stripUserSecrets(row) {
+    if (!row || typeof row !== 'object') return row;
+    const out = { ...row };
+    for (const f of USER_SECRET_FIELDS) delete out[f];
+    return out;
+}
+
 
 exports.signInTeacher = async (req, res) => {
     const { email, password } = req.body;
@@ -34,8 +45,8 @@ exports.signInTeacher = async (req, res) => {
             role: staff.role,
         });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Error signing in', error: error.sqlMessage });
+        console.error('[auth] signInTeacher error:', error.message);
+        res.status(500).json({ message: 'Error signing in' });
     }
 };
 
@@ -62,8 +73,8 @@ exports.refreshToken = async (req, res) => {
             res.json({ accessToken });
         });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Error refreshing token', error: error.sqlMessage });
+        console.error('[auth] refreshToken error:', error.message);
+        res.status(500).json({ message: 'Error refreshing token' });
     }
 };
 
@@ -75,7 +86,6 @@ exports.userInit = async (req, res) => {
     const token = authHeader.split(' ')[1]; // Extract token
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        console.log('decoded',decoded)
         const [[staff]] = await pool.query('SELECT * FROM staff WHERE id = ?', [decoded.id]);
         if (!staff) {
             return res.status(404).json({ message: 'admin not found' });
@@ -103,7 +113,7 @@ exports.users = async (req, res) => {
         if (!users) {
             return res.status(404).json({ message: 'admin not found' });
         }
-        res.json(users);
+        res.json(users.map(stripUserSecrets));
     } catch (error) {
         console.error(error);
         return res.status(401).json({ message: 'Unauthorized' }); // Invalid token
@@ -188,7 +198,7 @@ exports.ordersByUsers = async (req, res) => {
             orders.map((order) => prepareOrderRowForClient(order))
         );
 
-        res.json({orders:parsedOrders,users:users});
+        res.json({orders:parsedOrders,users:users.map(stripUserSecrets)});
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Server error' });
