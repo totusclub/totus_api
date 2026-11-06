@@ -28,7 +28,7 @@ const { requireAuth, optionalAuth, resolveOwnerId, assertOrderOwner, authMode } 
 // Платёжная политика (SECURITY_AUDIT_2026-11_RU.md, C2/C3): сумма с сервера, payUrl только платёжных систем,
 // защита callback банка.
 const paymentPolicy = require('./lib/paymentPolicy');
-const { corsMiddleware, helmetMiddleware, allowedOrigins } = require('./lib/security');
+const { corsMiddleware, helmetMiddleware, apiLimiter, allowedOrigins } = require('./lib/security');
 
 const app = express();
 // За nginx — один хоп; нужно для корректного req.ip (rate-limit, auth-логи).
@@ -39,6 +39,8 @@ const { optionalCompression } = require('./lib/optionalCompression');
 app.use(optionalCompression());
 app.use(helmetMiddleware());
 app.use(corsMiddleware());
+// H9 аудита: общий лимит запросов с IP (API_RATE_LIMIT / API_RATE_MODE=log|enforce, lib/security.js).
+app.use(apiLimiter());
 app.use(express.json());
 // Журнал согласий: пишет req.body.consents форм после успешного ответа (middleware/consentsRecorder.js).
 app.use(require('./middleware/consentsRecorder')());
@@ -163,8 +165,6 @@ app.get('/references/destinations', async (req, res) => {
 
 app.get('/references/autocomplete_v2', async (req, res) => {
     try {
-        console.log('dcd',req.query)
-
             const response = await axios.get(`${BASE_URL}/references/autocomplete_v2`, {
                 params: req.query,
                 headers: HEADERS,
@@ -292,7 +292,6 @@ const searchCache = createSearchCache({
 
 app.get('/start-search', async (req, res) => {
     try {
-        console.log(req.query)
         const cached = searchCache.lookupStart(req.query);
         if (cached) {
             console.log(`[SEARCH-CACHE] hit start ${req.query.to_country} ${req.query.start_date}`);
@@ -323,7 +322,6 @@ app.get('/start-search', async (req, res) => {
 app.get('/packages/package_details', async (req, res) => {
     const startedAt = Date.now();
     try {
-        console.log(req.query)
         const response = await axios.get(`${BASE_URL}/packages/package_details`, {
             params: req.query,
             headers: HEADERS,
@@ -339,7 +337,6 @@ app.get('/packages/package_details', async (req, res) => {
 app.get('/packages/actualize', async (req, res) => {
     const startedAt = Date.now();
     try {
-        console.log(req.query)
         const response = await axios.get(`${BASE_URL}/packages/actualize`, {
             params: req.query,
             headers: HEADERS,
@@ -446,8 +443,6 @@ app.get('/grouped-hotels', async (req, res) => {
         // (lib/searchCache.js — та же функция строит первую страницу при прогреве).
         const params = buildGroupedHotelsParams(req.query);
 
-        console.log('params', params);
-
         const cached = searchCache.lookupGrouped(params);
         if (cached) return res.json(cached);
 
@@ -515,7 +510,6 @@ app.get('/get-hotel-offers', async (req, res) => {
     try {
         const { request_id, operator_ids, hotel_id, compact } = req.query;
 
-        console.log('req.query',req.query)
         if (!request_id || !hotel_id) {
             return res.status(400).json({ error: 'Missing request_id or hotel_id' });
         }
@@ -940,8 +934,6 @@ app.post('/validate-tourists', async (req, res) => {
             req.body,
             { headers: HEADERS, timeout: LT_STEP_TIMEOUT_MS.validateTourists }
         );
-
-        console.log('response.data:', response.data);
 
         return res.json(response.data);
 
