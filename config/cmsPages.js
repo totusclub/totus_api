@@ -22,6 +22,11 @@ const ALLOWED_CMS_PAGE_SLUGS = new Set([
     'cancellation',
     'tourist-memo',
     'payment',
+    // Редакция от 30.10.2026: отдельные согласия и приложения к договору
+    'personalization-consent',
+    'marketing-data-consent',
+    'booking-application',
+    'operator-information',
 ]);
 
 /** Юридические документы — порядок показа в приложении и на сайте */
@@ -29,10 +34,14 @@ const LEGAL_CMS_PAGE_SLUGS = [
     'terms',
     'privacy-policy',
     'consent',
+    'personalization-consent',
     'ads-consent',
+    'marketing-data-consent',
     'cookie-settings',
     'recommendations',
     'tour-offer',
+    'booking-application',
+    'operator-information',
     'hotel-booking',
     'cancellation',
     'tourist-memo',

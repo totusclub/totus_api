@@ -28,3 +28,6 @@ uploads/orders/
 
 # Снимки кеша поиска (lib/searchCache.js) — выдача LT, пересоздаются каждую ночь.
 var/
+
+# Резервные копии прежних текстов CMS (scripts/apply-legal-pages.js)
+backups/
