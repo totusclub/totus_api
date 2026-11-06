@@ -32,7 +32,8 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-    if (/^image\/(jpeg|jpg|png|gif|webp|svg\+xml|bmp)$/i.test(file.mimetype || '')) {
+    // M4 аудита: SVG исключён — это HTML-подобный формат со скриптами, а файлы отдаются с api.totus.club без CSP.
+    if (/^image\/(jpeg|jpg|png|gif|webp|bmp)$/i.test(file.mimetype || '')) {
         cb(null, true);
         return;
     }

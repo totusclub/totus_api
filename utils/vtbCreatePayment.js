@@ -8,7 +8,11 @@ const { logCallback, logCallbackError } = require('./callbackLogger');
 const { requireEnv } = require('../lib/env');
 
 const LOG = 'VTB_PAYMENT';
-const vtbHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+// H5 аудита: сертификат шлюза VTB проверяется. Аварийный откат (только временно, при проблеме с цепочкой
+// сертификатов банка): VTB_TLS_INSECURE=1 — с предупреждением в лог.
+const vtbTlsInsecure = process.env.VTB_TLS_INSECURE === '1';
+if (vtbTlsInsecure) console.warn('[VTB_PAYMENT] VTB_TLS_INSECURE=1 — проверка сертификата банка ОТКЛЮЧЕНА');
+const vtbHttpsAgent = new https.Agent({ rejectUnauthorized: !vtbTlsInsecure });
 const vtbAxiosConfig = { httpsAgent: vtbHttpsAgent };
 
 async function generationBankToken() {
