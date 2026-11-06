@@ -44,6 +44,10 @@ app.use(apiLimiter());
 app.use(express.json());
 // Журнал согласий: пишет req.body.consents форм после успешного ответа (middleware/consentsRecorder.js).
 app.use(require('./middleware/consentsRecorder')());
+// Статус оплаты (/check_pay): владелец заказа или staff — полный ответ, чужой заказ — 403; без токена —
+// только статус оплаты (повторный аудит 06.11 §3.5, lib/paymentPolicy.js §4). Стоит ДО middleware customRooms:
+// тот сам отвечает на /check_pay для внутренних заказов, и ограничение ответа должно действовать и там.
+app.post('/check_pay', optionalAuth, paymentPolicy.checkPayAccess({ db, assertOrderOwner }));
 
 // Документы заказа (SECURITY_AUDIT_2026-09_RU.md, К1): ссылки в ответах клиенту
 // подписываются, а сама отдача файлов идёт с проверкой доступа. Оба middleware
@@ -976,6 +980,19 @@ app.get('/client/orders', requireAuth(ORDER_VIEW_ROLES), async (req, res) => {
                 hint:
                     'Pass ?auth_token=... from order create response (orders.lt_auth_token). Partner API key is added by this proxy automatically.',
             });
+        }
+
+        // H4 аудита (остаток, повторный аудит 06.11 §3.6): LT-токен клиента должен принадлежать заказу
+        // вызывающего — иначе любой вошедший мог бы запросить заказы по чужому токену. Сотрудник — любой.
+        if (req.auth && req.auth.role !== 'staff') {
+            const [own] = await db.query(
+                'SELECT 1 FROM orders WHERE user_id = ? AND lt_auth_token = ? LIMIT 1',
+                [req.auth.id, auth_token],
+            );
+            if (!own.length) {
+                if (authMode() === 'enforce') return res.status(403).json({ error: 'forbidden' });
+                console.warn(`[AUTH] mode=log reason=lt_token_mismatch GET /client/orders auth=${req.auth.role}#${req.auth.id} ip=${req.ip}`);
+            }
         }
 
         const {
