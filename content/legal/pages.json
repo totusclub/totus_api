@@ -1,0 +1,109 @@
+{
+ "edition": "30.10.2026",
+ "pages": [
+  {
+   "slug": "terms",
+   "name": "Пользовательское соглашение",
+   "file": "terms.html"
+  },
+  {
+   "slug": "privacy-policy",
+   "name": "Политика обработки персональных данных",
+   "file": "privacy-policy.html"
+  },
+  {
+   "slug": "consent",
+   "name": "Согласие на обработку персональных данных",
+   "file": "consent.html"
+  },
+  {
+   "slug": "personalization-consent",
+   "name": "Согласие на обработку персональных данных для персональных рекомендаций",
+   "file": "personalization-consent.html",
+   "seo_title": "Согласие на обработку персональных данных для персональных рекомендаций",
+   "seo_desc": "Согласие на обработку истории поисков и просмотров для персональных рекомендаций Totus Club.",
+   "seo_keywords": "Totus Club, правовая информация, ООО «ТОТУСКЛАБ»",
+   "section": "legal",
+   "breadcrumb_label": "Согласие на обработку персональных данных для персональных рекомендаций",
+   "mobile_header_title": "Согласие на персональные рекомендации"
+  },
+  {
+   "slug": "ads-consent",
+   "name": "Согласие на получение рекламы",
+   "file": "ads-consent.html"
+  },
+  {
+   "slug": "marketing-data-consent",
+   "name": "Согласие на обработку персональных данных для направления рекламы",
+   "file": "marketing-data-consent.html",
+   "seo_title": "Согласие на обработку персональных данных для направления рекламы",
+   "seo_desc": "Согласие на обработку имени и адреса электронной почты для направления рекламы Totus Club.",
+   "seo_keywords": "Totus Club, правовая информация, ООО «ТОТУСКЛАБ»",
+   "section": "legal",
+   "breadcrumb_label": "Согласие на обработку персональных данных для направления рекламы",
+   "mobile_header_title": "Согласие на обработку данных для рекламы"
+  },
+  {
+   "slug": "cookie-settings",
+   "name": "Политика использования файлов cookie",
+   "file": "cookie-settings.html"
+  },
+  {
+   "slug": "recommendations",
+   "name": "Правила применения рекомендательных технологий",
+   "file": "recommendations.html"
+  },
+  {
+   "slug": "tour-offer",
+   "name": "Оферта о заключении договора о реализации туристского продукта",
+   "file": "tour-offer.html"
+  },
+  {
+   "slug": "booking-application",
+   "name": "Форма заявки на бронирование туристского продукта",
+   "file": "booking-application.html",
+   "seo_title": "Форма заявки на бронирование туристского продукта",
+   "seo_desc": "Форма Заявки на бронирование туристского продукта — приложение к договору о реализации туристского продукта.",
+   "seo_keywords": "Totus Club, правовая информация, ООО «ТОТУСКЛАБ»",
+   "section": "legal",
+   "breadcrumb_label": "Форма заявки на бронирование туристского продукта",
+   "mobile_header_title": "Форма заявки на бронирование"
+  },
+  {
+   "slug": "operator-information",
+   "name": "Форма информации о туроператоре",
+   "file": "operator-information.html",
+   "seo_title": "Форма информации о туроператоре",
+   "seo_desc": "Форма сведений о туроператоре и его финансовом обеспечении — приложение к Заявке и договору.",
+   "seo_keywords": "Totus Club, правовая информация, ООО «ТОТУСКЛАБ»",
+   "section": "legal",
+   "breadcrumb_label": "Форма информации о туроператоре",
+   "mobile_header_title": "Информация о туроператоре"
+  },
+  {
+   "slug": "hotel-booking",
+   "name": "Условия бронирования размещения",
+   "file": "hotel-booking.html"
+  },
+  {
+   "slug": "cancellation",
+   "name": "Изменение, отмена и возврат",
+   "file": "cancellation.html"
+  },
+  {
+   "slug": "tourist-memo",
+   "name": "Памятка туристу",
+   "file": "tourist-memo.html"
+  },
+  {
+   "slug": "payment",
+   "name": "Оплата и возврат денег",
+   "file": "payment.html"
+  },
+  {
+   "slug": "requisites",
+   "name": "Реквизиты и контакты",
+   "file": "requisites.html"
+  }
+ ]
+}

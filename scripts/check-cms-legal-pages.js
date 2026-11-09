@@ -74,6 +74,14 @@ async function check(name, fn) {
         'payment': 'Оплата и возврат денег',
     };
     const PACK2_SLUGS = Object.keys(PACK2);
+    // Редакция от 30.10.2026: отдельные согласия и приложения к договору
+    const PACK3 = {
+        'personalization-consent': 'Согласие на обработку персональных данных для персональных рекомендаций',
+        'marketing-data-consent': 'Согласие на обработку персональных данных для направления рекламы',
+        'booking-application': 'Форма заявки на бронирование туристского продукта',
+        'operator-information': 'Форма информации о туроператоре',
+    };
+    const PACK3_SLUGS = Object.keys(PACK3);
 
     await check('новые юридические страницы разрешены', () => {
         NEW.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
@@ -84,13 +92,18 @@ async function check(name, fn) {
     });
     await check('прежние 11 страниц по-прежнему разрешены', () => {
         OLD.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
-        assert.strictEqual(ALLOWED_CMS_PAGE_SLUGS.size, OLD.length + NEW.length + PACK2_SLUGS.length);
+        assert.strictEqual(ALLOWED_CMS_PAGE_SLUGS.size, OLD.length + NEW.length + PACK2_SLUGS.length + PACK3_SLUGS.length);
     });
     await check('посторонний slug запрещён', () => {
         ['admin', 'unknown-page', 'tour-offer-old', '', ' '].forEach((s) => assert.ok(!isAllowedCmsPageSlug(s), JSON.stringify(s)));
     });
-    await check('список юридических документов — 12, все разрешены', () => {
-        assert.strictEqual(LEGAL_CMS_PAGE_SLUGS.length, 12);
+    await check('документы редакции 30.10.2026 разрешены и в списке', () => {
+        PACK3_SLUGS.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
+        PACK3_SLUGS.forEach((s) => assert.ok(LEGAL_CMS_PAGE_SLUGS.includes(s), s));
+    });
+    await check('список юридических документов — 16, все разрешены, без повторов', () => {
+        assert.strictEqual(LEGAL_CMS_PAGE_SLUGS.length, 16);
+        assert.strictEqual(new Set(LEGAL_CMS_PAGE_SLUGS).size, 16);
         LEGAL_CMS_PAGE_SLUGS.forEach((s) => assert.ok(isAllowedCmsPageSlug(s), s));
     });
     for (const slug of NEW) {
@@ -111,8 +124,8 @@ async function check(name, fn) {
             assert.strictEqual(r.body.section, 'legal');
         });
     }
-    for (const slug of PACK2_SLUGS) {
-        const name = PACK2[slug];
+    for (const slug of [...PACK2_SLUGS, ...PACK3_SLUGS]) {
+        const name = PACK2[slug] || PACK3[slug];
         await check(`админка сохраняет «${name}» (${slug}), публичный API отдаёт текст`, async () => {
             const r1 = res();
             await ctrl.savePage({ body: { slug, name, section: 'legal', content: '<p>v1</p>' } }, r1);
